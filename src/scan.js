@@ -5,6 +5,8 @@ const { join } = require('path');
 const { reduce, ActionError } = require('./reduce');
 const { reduceSast } = require('./sast');
 const { envelope, fit, send } = require('./post');
+const { loadConfig, DEFAULT_CONFIG } = require('./ai-config');
+const { PARSERS, buildPayload, fitSuites, aiEnvelopeId } = require('./ai-eval');
 
 /** Largest results file read (a scanner's JSON for a big monorepo is a few MB). */
 const MAX_RESULTS_BYTES = 50 * 1024 * 1024;
@@ -107,6 +109,54 @@ async function scan(
   return { answer, payload: JSON.parse(body).payload, dropped };
 }
 
+/**
+ * An AI eval run: read the tool's results file and .complyd/ai.yml, build
+ * ai_eval v1 (hashes, counts and metric values only) and post it as
+ * collector complyd_ai_release, unless `dryRun`. `workspace` is the
+ * repository root the config's paths are relative to. Resolves Complyd's
+ * answer (null on a dry run), the envelope sent (or that would be) and warnings.
+ */
+async function scanAi(
+  { input, format, role = 'candidate', configPath = DEFAULT_CONFIG, commit, subject, runKey, workspace = process.cwd(), apiUrl, trust, getToken, dryRun = false },
+  { fetchImpl = fetch, now = () => new Date(), sleep } = {},
+) {
+  if (!SUBJECT.test(subject ?? '')) throw new ActionError('input', "The repository id isn't valid (letters, digits and : . _ / -).");
+  if (!/^([0-9a-f]{40}|[0-9a-f]{64})$/.test(commit ?? '')) {
+    throw new ActionError('commit', "The commit (GITHUB_SHA, CI_COMMIT_SHA, --commit or the checkout's HEAD) isn't a 40- or 64-character SHA.");
+  }
+  const cfg = loadConfig(configPath, workspace);
+  const { doc } = readResults(input, MAX_RESULTS_BYTES);
+  const warnings = [];
+  const at = now().toISOString();
+  const payload = buildPayload(PARSERS[format](doc), cfg, {
+    format,
+    role,
+    commit,
+    runId: runKey,
+    ranAt: at,
+    root: workspace,
+    warn: (w) => warnings.push(w),
+  });
+  const id = aiEnvelopeId(runKey, role, format, input);
+  const body = fitSuites(envelope(payload, { id, subject, observedAt: at, schema: 'ai_eval', collector: 'complyd_ai_release' }));
+  const sent = JSON.parse(body);
+  if (dryRun) return { answer: null, envelope: sent, warnings };
+  const answer = await send({ apiUrl, trust, body, getToken }, fetchImpl, sleep);
+  return { answer, envelope: sent, warnings };
+}
+
+/** The lines both entries print after an AI eval push. */
+function aiSummary({ answer, envelope: env }) {
+  const s = env.payload.suites;
+  const failed = s.filter((x) => !x.passed).length;
+  return [
+    `Sent ${s.length} eval suites (${s.length - failed} passed, ${failed} failed)${env.payload.truncated ? ', list cut' : ''}.`,
+    answer.unchanged
+      ? `Unchanged since the last run: Complyd recorded the check-in (${answer.observation}).`
+      : `Stored as ${answer.observation}${answer.duplicate ? ' (already sent by this run)' : ''}.`,
+  ];
+}
+
 /** One line of what couldn't be sent: "2 (no usable version 1, …): GHSA-…" (SAST: no ids). */
 function droppedLine(dropped) {
   const why = Object.entries(dropped.reasons)
@@ -139,4 +189,4 @@ const escape = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').repla
 const errorLine = (e) =>
   e instanceof ActionError ? e.message : `Unexpected error (${e?.name ?? 'Error'}${e?.cause?.code ? `, ${e.cause.code}` : ''}).`;
 
-module.exports = { scan, summary, droppedLine, errorLine, escape, MAX_RESULTS_BYTES, MAX_RESULT_FILES };
+module.exports = { scan, scanAi, aiSummary, summary, droppedLine, errorLine, escape, MAX_RESULTS_BYTES, MAX_RESULT_FILES };

@@ -1,0 +1,38 @@
+{
+  "results": {
+    "hellaswag": {
+      "alias": "hellaswag",
+      "acc,none": 0.4512,
+      "acc_stderr,none": 0.00496,
+      "acc_norm,none": 0.5873,
+      "acc_norm_stderr,none": 0.00491
+    }
+  },
+  "group_subtasks": { "hellaswag": [] },
+  "configs": {
+    "hellaswag": {
+      "task": "hellaswag",
+      "dataset_path": "hellaswag",
+      "doc_to_text": "{{query}}",
+      "description": "CANARY-TASK-DESCRIPTION",
+      "metric_list": [{ "metric": "acc", "aggregation": "mean", "higher_is_better": true }, { "metric": "acc_norm", "aggregation": "mean", "higher_is_better": true }]
+    }
+  },
+  "versions": { "hellaswag": 1.0 },
+  "n-shot": { "hellaswag": 0 },
+  "higher_is_better": { "hellaswag": { "acc": true, "acc_norm": true } },
+  "n-samples": { "hellaswag": { "original": 10042, "effective": 1000 } },
+  "config": { "model": "hf", "model_args": "pretrained=acme/support-7b,dtype=bfloat16", "batch_size": "8", "limit": 1000, "bootstrap_iters": 100000, "gen_kwargs": null },
+  "git_hash": "4600d6b",
+  "date": 1794996000.25,
+  "pretty_env_info": "CANARY-ENV PyTorch version: 2.5.1",
+  "transformers_version": "4.46.3",
+  "lm_eval_version": "0.4.8",
+  "task_hashes": { "hellaswag": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0" },
+  "model_source": "hf",
+  "model_name": "acme/support-7b",
+  "model_name_sanitized": "acme__support-7b",
+  "start_time": 1234.5,
+  "end_time": 2345.6,
+  "total_evaluation_time_seconds": "1111.1"
+}

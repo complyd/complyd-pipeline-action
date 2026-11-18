@@ -13,11 +13,11 @@ const MAX_BODY_BYTES = 64 * 1024;
  * duplicate and a re-run attempt is a new scan; a job may send one scan of
  * each schema.
  */
-function envelope(payload, { id, subject, observedAt, schema = 'dependency_scan' }) {
+function envelope(payload, { id, subject, observedAt, schema = 'dependency_scan', collector = 'complyd_ci_scan' }) {
   return {
     envelope: 1,
     id,
-    collector: 'complyd_ci_scan',
+    collector,
     collector_version: COLLECTOR_VERSION,
     schema,
     schema_version: 1,
