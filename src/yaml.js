@@ -112,6 +112,7 @@ function inline(rest, n) {
     for (const p of splitFlow(rest.slice(1, -1), n)) {
       const e = entry(p.trim(), n);
       if (!e) fail(n, 'each { map } entry must be key: value');
+      if (e[0] === '__proto__') fail(n, '"__proto__" is not a valid key');
       if (Object.hasOwn(out, e[0])) fail(n, `"${e[0]}" is listed twice`);
       out[e[0]] = scalar(e[1], n);
     }
@@ -129,7 +130,7 @@ function parseYaml(text) {
     .split(/\r?\n/)
     .forEach((raw, i) => {
       const n = i + 1;
-      const body = stripComment(raw).replace(/\s+$/, '');
+      const body = stripComment(raw).trimEnd();
       if (!body.trim()) return;
       if (/^(---|\.\.\.)(\s|$)/.test(body)) {
         if (lines.length) fail(n, 'only one document per file');
@@ -164,6 +165,7 @@ function parseYaml(text) {
       const e = entry(text, n);
       if (!e) fail(n, 'expected key: value');
       const [key, rest] = e;
+      if (key === '__proto__') fail(n, '"__proto__" is not a valid key');
       if (Object.hasOwn(out, key)) fail(n, `"${key}" is listed twice`);
       i += 1;
       out[key] = rest === '' ? child(indent, true) : inline(rest, n);

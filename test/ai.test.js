@@ -5,10 +5,10 @@ const assert = require('node:assert/strict');
 const { join } = require('path');
 const { createHash } = require('crypto');
 const { execFileSync } = require('child_process');
-const { mkdtempSync, writeFileSync, readFileSync, mkdirSync, cpSync } = require('fs');
+const { mkdtempSync, writeFileSync, readFileSync, mkdirSync, cpSync, symlinkSync } = require('fs');
 const { tmpdir } = require('os');
 const { parseYaml } = require('../src/yaml');
-const { parseConfig, hashFiles } = require('../src/ai-config');
+const { parseConfig, loadConfig, hashFiles } = require('../src/ai-config');
 const { PARSERS, FORMATS, buildPayload, decimal, providerModel, aiEnvelopeId } = require('../src/ai-eval');
 const { deployRecord, sections, splitModel } = require('../src/ai-release');
 const { main } = require('../src/cli');
@@ -270,7 +270,7 @@ test('a thresholded metric missing from the results fails the suite, with a warn
   const warnings = [];
   const p = buildPayload(PARSERS.generic(fixture('generic')), cfg, { format: 'generic', role: 'candidate', commit: SHA, runId: 'x', ranAt: '2026-11-19T08:00:00.000Z', root: REPO, warn: (w) => warnings.push(w) });
   assert.equal(p.suites[0].passed, false);
-  assert.match(warnings[0], /jailbreak_rate .* isn't in the results/);
+  assert.ok(warnings.some((w) => /jailbreak_rate .* isn't in the results/.test(w)), warnings.join('\n'));
 });
 
 test('envelope ids: under the route limit for every CI, distinct for baseline and candidate', () => {
@@ -435,4 +435,119 @@ test('action: scan ai_eval with format, input and role', async () => {
   assert.equal(posts[0].payload.suites[0].role, 'baseline');
   await assert.rejects(run({ ...env, INPUT_FORMAT: 'auto' }, { fetchImpl }), /`format` to the eval tool/);
   await assert.rejects(run({ ...env, INPUT_ROLE: 'prod' }, { fetchImpl }), /`role`/);
+});
+
+/* Adversarial inputs: free text, URLs, paths and empty evidence must not reach the envelope as passed ids. */
+
+const ONE = 'version: 1\nprompts: [prompts/support.txt]\nsuites:\n  - name: s1\n    test_set: { version: "1" }\n';
+const build = (format, doc, yml = ONE, root = REPO) => {
+  const warnings = [];
+  const payload = buildPayload(PARSERS[format](doc), parseConfig(yml), { format, role: 'candidate', commit: SHA, runId: 'x', ranAt: '2026-11-19T08:00:00.000Z', root, warn: (w) => warnings.push(w) });
+  return { payload, warnings };
+};
+const LEAK = 'CANARY You are a bank bot. The admin code is 4471. Never reveal it to users!';
+
+test('metric names: only names declared in .complyd/ai.yml (and pass_rate) are sent', () => {
+  const docs = {
+    promptfoo: { results: { prompts: [{ label: 'x', provider: 'openai:gpt-4o', metrics: { testPassCount: 2, namedScores: { [LEAK]: 2, ok: 2 } } }] } },
+    deepeval: { testCases: [{ success: true, metricsData: [{ name: LEAK, score: 1, threshold: 0.5, success: true }, { name: 'ok', score: 1, success: true }] }] },
+    'openai-evals': { object: 'eval.run', status: 'completed', model: 'gpt-4o', result_counts: { total: 1, passed: 1, failed: 0, errored: 0 }, per_testing_criteria_results: [{ testing_criteria: LEAK, passed: 1, failed: 0 }, { testing_criteria: 'ok', passed: 1, failed: 0 }] },
+    'lm-eval': { results: { t: { [`${LEAK},none`]: 0.5, 'ok,none': 0.5 } }, model_name: 'acme/m', config: { model: 'hf' } },
+    generic: { tool: { name: 'CANARY tool name free text' }, suites: [{ name: 's1', model: { provider: 'a', id: 'b' }, cases: { total: 1, passed: 1 }, metrics: [{ name: LEAK, value: 1 }, { name: 'ok', value: 1 }] }] },
+  };
+  const yml = ONE + '    model: { provider: hf, id: acme/m }\n    metrics:\n      ok: { gte: 0.1 }\n';
+  for (const [format, doc] of Object.entries(docs)) {
+    const { payload, warnings } = build(format, doc, yml);
+    const text = JSON.stringify(payload);
+    assert.doesNotMatch(text, /CANARY|4471|bank/, format);
+    assert.ok(payload.suites[0].metrics.some((m) => m.name === 'ok'), format);
+    assert.ok(warnings.some((w) => /1 metric\(s\) not listed/.test(w)), format);
+  }
+  // A metric left out still decides: a failed one fails the suite.
+  const doc = { suites: [{ name: 's1', model: { provider: 'a', id: 'b' }, cases: { total: 1, passed: 1 }, passed: true, metrics: [{ name: 'secret', value: 0.1, passed: false }] }] };
+  assert.equal(build('generic', doc).payload.suites[0].passed, false);
+});
+
+test('model and judge ids: URLs and local paths are refused', () => {
+  for (const p of ['wss://llm.internal.example/x', 'grpc:///srv/model', 'local:/home/alice/ckpt', 'local:./ckpt', 'local:~/ckpt', 'local:C:/models/x']) assert.equal(providerModel(p), undefined, p);
+  // lm-eval naming a checkpoint path: the model must come from the config.
+  assert.throws(() => build('lm-eval', { results: { t: { 'acc,none': 0.5 } }, model_name: '/home/alice/CANARY-ckpt', config: { model: 'hf', model_args: 'pretrained=/home/alice/x' } }), { code: 'config', message: /set model:/ });
+  // DeepEval's judge as an internal URL: left out, with a warning.
+  const { payload, warnings } = build('deepeval', { hyperparameters: { model: 'openai/gpt-4o' }, testCases: [{ success: true, metricsData: [{ name: 'm', score: 1, success: true, evaluationModel: 'https://judge.internal.example/v1/CANARY' }] }] });
+  assert.equal(payload.suites[0].evaluator.judge_model, undefined);
+  assert.doesNotMatch(JSON.stringify(payload), /CANARY|internal/);
+  assert.ok(warnings.some((w) => /judge model/.test(w)));
+  // The config is held to the same rule.
+  assert.throws(() => parseConfig(ONE + '    model: { provider: hf, id: /home/alice/ckpt }'), { code: 'config', message: /model.id: set the model id, not a URL/ });
+  assert.throws(() => parseConfig(ONE + '    evaluator: { judge_model: "https://judge.internal.example/v1" }'), { code: 'config', message: /judge_model: set the judge model id/ });
+});
+
+test('symlinks out of the repository are not followed', () => {
+  const outside = mkdtempSync(join(tmpdir(), 'ai-outside-'));
+  writeFileSync(join(outside, 'secret.txt'), 'PIN=4471\n');
+  writeFileSync(join(outside, 'keys.yml'), 'aws_secret_access_key: abc\n');
+  const repo = mkdtempSync(join(tmpdir(), 'ai-links-'));
+  mkdirSync(join(repo, 'd'));
+  mkdirSync(join(repo, '.complyd'));
+  writeFileSync(join(repo, 'in.txt'), 'prompt');
+  symlinkSync(join(outside, 'secret.txt'), join(repo, 'p.txt'));
+  symlinkSync(outside, join(repo, 'd', 'out'));
+  symlinkSync(join(repo, 'in.txt'), join(repo, 'link-in.txt'));
+  for (const path of ['p.txt', 'd/out/secret.txt', 'd/out/nope.txt']) {
+    assert.throws(() => hashFiles(repo, [path], 'prompts'), (e) => e.code === 'config' && /inside the repository/.test(e.message) && !/ENOENT|EACCES/.test(e.message), path);
+  }
+  assert.equal(hashFiles(repo, ['link-in.txt'], 'prompts'), sha('prompt'));
+  symlinkSync(join(outside, 'keys.yml'), join(repo, '.complyd', 'ai.yml'));
+  assert.throws(() => loadConfig('.complyd/ai.yml', repo), (e) => e.code === 'config' && !/aws_secret/.test(e.message));
+});
+
+test('empty evidence never passes', () => {
+  const pf = (metrics) => ({ results: { prompts: [{ label: 'x', provider: 'openai:gpt-4o', metrics }] } });
+  assert.equal(build('promptfoo', pf({})).payload.suites[0].passed, false);
+  const run0 = { object: 'eval.run', status: 'completed', model: 'gpt-4o', result_counts: { total: 0, passed: 0, failed: 0, errored: 0 } };
+  assert.equal(build('openai-evals', run0).payload.suites[0].passed, false);
+  const lm = { results: { t: { 'acc,none': 0.9 } }, model_name: 'acme/m', config: { model: 'hf' } };
+  const r = build('lm-eval', lm);
+  assert.equal(r.payload.suites[0].passed, false);
+  assert.ok(r.warnings.some((w) => /no cases and no thresholded metric/.test(w)));
+  assert.equal(build('lm-eval', lm, ONE + '    metrics:\n      acc: { gte: 0.5 }\n').payload.suites[0].passed, true);
+  // generic: no `passed` with failed cases is not a pass.
+  assert.equal(build('generic', { suites: [{ name: 's1', model: { provider: 'a', id: 'b' }, cases: { total: 2, passed: 1, failed: 1 } }] }).payload.suites[0].passed, false);
+  // Two result suites with different labels don't both land on the only config suite.
+  const two = { results: { prompts: [{ label: 'a', provider: 'openai:gpt-4o', metrics: { testPassCount: 1 } }, { label: 'b', provider: 'openai:gpt-4o', metrics: { testFailCount: 3 } }] } };
+  assert.throws(() => build('promptfoo', two), { code: 'config', message: /add match:/ });
+});
+
+test('errors print a results label only when it has no spaces', () => {
+  const two = ONE + '  - name: s2\n    test_set: { version: "1" }\n';
+  const doc = { results: { prompts: [{ label: 'You are CANARY bank bot. The admin code is 4471', provider: 'openai:gpt-4o', metrics: {} }] } };
+  assert.throws(() => build('promptfoo', doc, two), (e) => /#1 \(unnamed\)/.test(e.message) && !/CANARY|4471/.test(e.message));
+});
+
+test('hostile sizes: long whitespace, big config, many warnings and suites', () => {
+  const t0 = Date.now();
+  parseYaml(`a: x${' '.repeat(200_000)}y`);
+  assert.ok(Date.now() - t0 < 1000, 'linear in the line length');
+  assert.throws(() => parseConfig(`# ${'x'.repeat(256 * 1024)}\n${ONE}`), { code: 'config', message: /over 256 KB/ });
+  assert.throws(() => PARSERS.promptfoo({ results: { prompts: [{ metrics: { namedScores: 'x'.repeat(1000) } }] } }), { code: 'results' });
+  const many = { suites: Array.from({ length: 60 }, (_, i) => ({ name: `r${i}`, model: { provider: 'a', id: 'b' }, cases: { total: 1, passed: 1 } })) };
+  const yml = 'version: 1\nprompts: [prompts/support.txt]\nsuites:\n' + many.suites.slice(0, 50).map((s) => `  - name: ${s.name}\n    test_set: { version: "1" }\n    metrics:\n      m: { gte: 1 }\n`).join('');
+  const { payload, warnings } = build('generic', many, yml);
+  assert.equal(payload.suites.length, 50);
+  assert.equal(payload.truncated, true);
+  assert.equal(warnings.length, 21);
+  assert.match(warnings[20], /^30 more warnings not shown/);
+});
+
+test('config: unquoted decimal versions and __proto__ keys are refused', () => {
+  assert.throws(() => parseConfig(ONE + '    prompt_version: 1.10'), { code: 'config', message: /prompt_version: quote it, e.g. "1.1"/ });
+  assert.equal(parseConfig(ONE + '    prompt_version: 12').suites[0].prompt_version, '12');
+  assert.throws(() => parseYaml('__proto__:\n  version: 1'), /__proto__/);
+  assert.throws(() => parseYaml('a: { __proto__: 1 }'), /__proto__/);
+});
+
+test('generic: non-string ids are not models and do not crash', () => {
+  for (const model of [{ provider: ['acme'], id: [['CANARY-arr']] }, { provider: { toString: 1 }, id: 'x' }]) {
+    assert.throws(() => build('generic', { suites: [{ name: 's1', model, cases: { total: 1, passed: 1 } }] }), { code: 'config', message: /set model:/ });
+  }
 });

@@ -1,14 +1,16 @@
 'use strict';
 
 const { createHash } = require('crypto');
-const { readFileSync, statSync } = require('fs');
-const { join } = require('path');
+const { readFileSync, statSync, realpathSync } = require('fs');
+const { join, sep } = require('path');
 const { ActionError } = require('./reduce');
 const { parseYaml, YamlError } = require('./yaml');
 
 const DEFAULT_CONFIG = '.complyd/ai.yml';
 /** Largest file hashed (a dataset of a few hundred MB is read in one go). */
 const MAX_HASH_BYTES = 512 * 1024 * 1024;
+/** Largest .complyd/ai.yml read. */
+const MAX_CONFIG_BYTES = 256 * 1024;
 
 // The ai_eval v1 schema's patterns.
 const NAME = /^[A-Za-z0-9 ._:/@+-]{1,128}$/;
@@ -20,6 +22,10 @@ const MODEL_VERSION = /^[A-Za-z0-9._:/@+-]{1,64}$/;
 const METRIC = /^[A-Za-z0-9 ._:/@+-]{1,64}$/;
 const SELECTIONS = ['production_sample', 'curated', 'synthetic', 'regression', 'mixed'];
 const MAX_SUITES = 50;
+/** A model id that is not a URL or a local path (those can name internal hosts or home directories). */
+const isModelId = (s) => typeof s === 'string' && MODEL_ID.test(s) && !s.includes('//') && !/^[/.~]/.test(s) && !/^[A-Za-z]:\//.test(s);
+const JUDGE = /^[A-Za-z0-9._:/@+-]{1,200}$/;
+const isJudge = (s) => typeof s === 'string' && JUDGE.test(s) && !s.includes('//') && !/^[/.~]/.test(s) && !/^[A-Za-z]:\//.test(s);
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
@@ -36,7 +42,7 @@ function validate(doc) {
   const known = (obj, where, keys) => {
     for (const k of Object.keys(obj)) if (!keys.includes(k)) bad(`${where}${k}`, `unknown key (expected one of ${keys.join(', ')})`);
   };
-  // Paths are repository-relative; never outside it.
+  // Paths are repository-relative (no '..'); symlinks out of the repository are refused when read (insideFile).
   const path = (p, where) => {
     if (typeof p !== 'string' || !p.trim()) return bad(where, 'set it to a file path relative to the repository root');
     if (p.startsWith('/') || /^[A-Za-z]:/.test(p) || p.split(/[\\/]/).includes('..')) {
@@ -51,6 +57,8 @@ function validate(doc) {
   };
   const str = (v, where, re, example) => {
     if (v === undefined || v === null) return undefined;
+    // An unquoted 1.10 reads as the number 1.1: refuse it rather than send another version.
+    if (typeof v === 'number' && !Number.isInteger(v)) return bad(where, `quote it, e.g. "${v}" (unquoted, a number like 1.10 reads as 1.1)`);
     const s = typeof v === 'number' ? String(v) : v;
     if (typeof s !== 'string' || !re.test(s)) return bad(where, `use letters, digits and . _ : / @ + - (e.g. ${example})`);
     return s;
@@ -140,7 +148,8 @@ function validate(doc) {
         else {
           known(m, `${where}.model.`, ['provider', 'id', 'version']);
           const provider = str(m.provider, `${where}.model.provider`, PROVIDER, 'openai');
-          const id = str(m.id, `${where}.model.id`, MODEL_ID, 'gpt-4o-mini');
+          let id = str(m.id, `${where}.model.id`, MODEL_ID, 'gpt-4o-mini');
+          if (id && !isModelId(id)) id = bad(`${where}.model.id`, 'set the model id, not a URL or a local path');
           if (!provider || !id) bad(`${where}.model`, 'set both provider: (lower case, e.g. openai) and id:');
           suite.model = { provider, id, version: str(m.version, `${where}.model.version`, MODEL_VERSION, '2024-07-18') };
         }
@@ -164,9 +173,10 @@ function validate(doc) {
         suite.evaluator = {
           version: str(e.version, `${where}.evaluator.version`, REF, '3'),
           parser: str(e.parser, `${where}.evaluator.parser`, REF, 'json-score'),
-          judge_model: str(e.judge_model, `${where}.evaluator.judge_model`, /^[A-Za-z0-9._:/@+-]{1,200}$/, 'openai/gpt-4o'),
+          judge_model: str(e.judge_model, `${where}.evaluator.judge_model`, JUDGE, 'openai/gpt-4o'),
           rubric: e.rubric === undefined ? undefined : path(e.rubric, `${where}.evaluator.rubric`),
         };
+        if (suite.evaluator.judge_model && !isJudge(suite.evaluator.judge_model)) bad(`${where}.evaluator.judge_model`, 'set the judge model id, not a URL or a local path');
       }
       suite.metrics = {};
       if (s.metrics !== undefined) {
@@ -200,37 +210,63 @@ function validate(doc) {
 
 /** Parses and validates config text (from the working tree or a commit). */
 function parseConfig(text) {
+  if (Buffer.byteLength(text) > MAX_CONFIG_BYTES) throw new ActionError('config', 'Fix .complyd/ai.yml: it is over 256 KB.');
   let doc;
   try {
     doc = parseYaml(text);
   } catch (e) {
     if (e instanceof YamlError) throw new ActionError('config', `Fix .complyd/ai.yml: ${e.message}.`);
+    if (e instanceof RangeError) throw new ActionError('config', 'Fix .complyd/ai.yml: it is nested too deeply.');
     throw e;
   }
   return validate(doc);
 }
 
+/**
+ * `path` under `root` with symlinks resolved, or null when it doesn't resolve
+ * to a file inside `root`. One answer for missing, unreadable and outside, so
+ * a link can't probe what exists outside the repository.
+ */
+function insideFile(root, path) {
+  try {
+    const r = realpathSync(root);
+    const t = realpathSync(join(r, path));
+    return t.startsWith(r + sep) && statSync(t).isFile() ? t : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The config file at `configPath` (relative to `root`). */
 function loadConfig(configPath = DEFAULT_CONFIG, root = process.cwd()) {
+  const file = insideFile(root, configPath);
   let text;
   try {
-    text = readFileSync(join(root, configPath), 'utf8');
-  } catch (e) {
-    throw new ActionError('config', `Couldn't read ${configPath} (${e.code ?? 'unreadable'}): create it (see the README's AI release section) or pass --suite-config.`);
+    if (!file || statSync(file).size > MAX_CONFIG_BYTES) throw new Error();
+    text = readFileSync(file, 'utf8');
+  } catch {
+    throw new ActionError('config', `Couldn't read ${configPath} (a file of at most 256 KB inside the workspace): create it (see the README's AI release section) or pass --suite-config.`);
   }
   return parseConfig(text);
 }
 
-/** SHA-256 of a repository file; `where` names the config entry in the error. */
-function hashFile(root, path, where) {
+/** SHA-256 of a repository file; `where` names the config entry in the error. `cache` keeps hashes by path for one run. */
+function hashFile(root, path, where, cache) {
+  if (cache?.has(path)) return cache.get(path);
+  const file = insideFile(root, path);
+  let why = 'it must be a file inside the repository; paths are relative to the repository root';
   try {
-    const st = statSync(join(root, path));
-    if (!st.isFile()) throw Object.assign(new Error(), { code: 'not a file' });
-    if (st.size > MAX_HASH_BYTES) throw Object.assign(new Error(), { code: 'over 512 MB' });
-    return sha256(readFileSync(join(root, path)));
-  } catch (e) {
-    throw new ActionError('config', `${where}: couldn't read ${path} (${e.code ?? 'unreadable'}); paths are relative to the repository root.`);
+    if (!file) throw new Error();
+    if (statSync(file).size > MAX_HASH_BYTES) why = 'it is over 512 MB';
+    else {
+      const h = sha256(readFileSync(file));
+      cache?.set(path, h);
+      return h;
+    }
+  } catch {
+    // falls through to the one error below
   }
+  throw new ActionError('config', `${where}: couldn't read ${path} (${why}).`);
 }
 
 /**
@@ -238,10 +274,10 @@ function hashFile(root, path, where) {
  * holding the prompt can confirm it), else SHA-256 of `sha256sum`-style
  * lines (`<hash>  <path>`), sorted by path.
  */
-function hashFiles(root, files, where) {
+function hashFiles(root, files, where, cache) {
   const list = [...new Set(files)].sort();
-  if (list.length === 1) return hashFile(root, list[0], where);
-  return sha256(list.map((p) => `${hashFile(root, p, where)}  ${p}\n`).join(''));
+  if (list.length === 1) return hashFile(root, list[0], where, cache);
+  return sha256(list.map((p) => `${hashFile(root, p, where, cache)}  ${p}\n`).join(''));
 }
 
-module.exports = { parseConfig, loadConfig, validate, hashFile, hashFiles, sha256, DEFAULT_CONFIG, NAME, REF, PROVIDER, MODEL_ID, MODEL_VERSION, METRIC };
+module.exports = { parseConfig, loadConfig, validate, hashFile, hashFiles, sha256, isModelId, isJudge, DEFAULT_CONFIG, NAME, REF, PROVIDER, MODEL_ID, MODEL_VERSION, METRIC };
