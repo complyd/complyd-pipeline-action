@@ -27,14 +27,20 @@ suites:
       rubric: evals/rubric.md
     metrics:
       pass_rate: { gte: 0.9, category: unsafe_compliance }
+      refusal: {}
+      "tone -polite-": {}             # promptfoo's "tone (polite)": other characters become -
+      refuses-cross-account-6f1a2b: {}
+      latency_p95_ms: {}
     files: [promptfooconfig.yaml]
   - name: answer-quality
     match: support-quality
     test_set: { version: "7" }
     metrics:
       Answer Relevancy: { gte: 0.7 }
+      Toxicity: {}
   - name: hellaswag
     model: { provider: hf, id: acme/support-7b, version: "2026-10-01" }
     test_set: { version: "1.0" }
     metrics:
       acc_norm: { gte: 0.5 }
+      acc: {}

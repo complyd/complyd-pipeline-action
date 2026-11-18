@@ -475,10 +475,15 @@ cases or dataset contents. Per suite it receives only: the suite, metric and
 category names, metric values and thresholds, case counts, the model's
 provider and id, the test set and evaluator versions, the judge model's id,
 and SHA-256 hashes of the prompt, dataset and rubric files (computed in your
-CI; anyone holding the file can check a hash, nobody can read the file back
-from it). The readers keep numbers and ids only, and the tests check that no
-prompt, output or case text from the fixtures reaches what is sent. Run with
-`--dry-run` to see exactly what would be sent.
+CI). A hash does not reveal a file's content, though a short or guessable
+file can be confirmed by someone who guesses it. For one file the hash is
+the file's own SHA-256; for several it is the SHA-256 of `sha256sum`-style
+lines (`<sha256>  <path>`, sorted by path). The readers keep numbers and ids
+only: a metric is sent only when its name is listed under the suite's
+`metrics:` in `.complyd/ai.yml` (`pass_rate` always), and a model or judge id
+that looks like a URL or a local path is left out. The tests check that no
+prompt, output, case or metric-name text from the fixtures reaches what is
+sent. Run with `--dry-run` to see exactly what would be sent.
 
 The tool's own suite labels (a promptfoo prompt label can be the prompt's
 text) are used only to find the suite in `.complyd/ai.yml` and are never
@@ -525,7 +530,9 @@ suites:
     files: [promptfooconfig.yaml]    # the suite's own eval config
 ```
 
-Paths are relative to the repository root. A mistake fails the step with
+Paths are relative to the repository root and must stay inside it: a
+symlink that leads outside the repository is refused. Quote versions
+(`"1.10"`): an unquoted `1.10` is a number and is refused. A mistake fails the step with
 each problem and what to change, e.g. `suites[0].test_set.version: set the
 test set version (or a dataset:, whose hash then names it)`. Each suite needs
 prompt files and a test set version (or a dataset). The file is read by a
@@ -537,12 +544,19 @@ How each suite is filled in:
   DeepEval: each metric's average score with its threshold (Bias, Toxicity
   and Hallucination are lower-is-better); OpenAI: `pass_rate` and each
   testing criterion's pass rate; lm-eval: each metric (`acc`, `acc_norm`,
-  `exact_match:<filter>`, …), without its stderr. A threshold under
-  `metrics:` replaces the tool's; a thresholded metric missing from the
-  results fails the suite.
+  `exact_match:<filter>`, …), without its stderr. Only metrics listed under
+  `metrics:` are sent (`{}` lists one without a threshold), under the name
+  the tool gives with characters other than letters, digits, spaces and
+  `. _ : / @ + -` changed to `-`. A metric left out still counts: if the tool
+  failed it, the suite fails. A threshold under `metrics:` replaces the
+  tool's; a thresholded metric missing from the results fails the suite.
+- **Matching.** A results suite goes to the config suite whose `match:` (else
+  `name:`) equals the tool's label. With one config suite, results with a
+  single label go to it; results with several labels need `match:`.
 - **Cases.** The tool's pass, fail and error counts. lm-eval has no per-case
-  verdicts: its cases are 0 and its sample count is the test set size, so
-  only a threshold can pass an lm-eval suite.
+  verdicts: its cases are 0 and its sample count is the test set size. A
+  suite with no cases (any tool) passes only through a threshold: with none,
+  it is sent as failed.
 - **Role.** `role: baseline` for the version in production re-run as the
   comparison, `candidate` (default) for the change being released. Send each
   as its own step.
@@ -603,7 +617,9 @@ prints the envelope without any sign-in.
 ### Generic format
 
 For any other harness, write this JSON (`value` a number or a decimal
-string; `threshold`, `passed` and `model` optional):
+string; `threshold`, `passed` and `model` optional; a suite without `passed`
+passes when it has no failed or errored cases; `tool.name` is an id without
+spaces):
 
 ```json
 {
@@ -639,6 +655,14 @@ SHA-256: `model`, `model_params`, `prompt`, `safety_prompt`, `eval_suite`
 No file content or path is in the record. It needs the parent commit
 (`actions/checkout` `fetch-depth: 2`, GitLab `GIT_DEPTH: 2`). **Sending it
 to Complyd is coming soon**: today it runs only with `--dry-run`.
+
+Known limits of the dry run: it compares HEAD with its first parent only, so
+a deploy that carries several commits shows the last commit's change (the
+record will need the previously deployed commit before it is sent); a file
+git can't show (over 512 MB, or a checkout git refuses because another user
+owns it) reads as missing; and its hashes come from git's stored blobs, so
+under Git LFS or line-ending conversion they differ from the working-tree
+hashes `scan ai_eval` sends for the same file.
 
 ## Inputs
 

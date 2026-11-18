@@ -2,7 +2,7 @@
 
 const { createHash } = require('crypto');
 const { ActionError } = require('./reduce');
-const { hashFile, hashFiles, NAME, PROVIDER, MODEL_ID, MODEL_VERSION, METRIC } = require('./ai-config');
+const { hashFile, hashFiles, isModelId, isJudge, PROVIDER, MODEL_VERSION } = require('./ai-config');
 const { MAX_BODY_BYTES } = require('./post');
 
 const FORMATS = ['promptfoo', 'deepeval', 'openai-evals', 'lm-eval', 'generic'];
@@ -10,7 +10,9 @@ const ROLES = ['baseline', 'candidate'];
 const MAX_SUITES = 50;
 const MAX_METRICS = 50;
 const MAX_COUNT = 10_000_000;
-const TOOL_NAME = /^[A-Za-z0-9 ._/@+-]{1,64}$/;
+const MAX_WARNINGS = 20;
+// No spaces: a tool name is an id, not a place for free text.
+const TOOL_NAME = /^[A-Za-z0-9._/@+-]{1,40}$/;
 const TOOL_VERSION = /^[A-Za-z0-9._+-]{1,40}$/;
 const DECIMAL = /^-?[0-9]{1,12}(\.[0-9]{1,9})?$/;
 
@@ -18,11 +20,14 @@ const DECIMAL = /^-?[0-9]{1,12}(\.[0-9]{1,9})?$/;
  * Each parser reads a tool's results document and keeps only numbers, model
  * ids, metric names and the tool's suite label (used to find the suite in
  * .complyd/ai.yml, never sent): no prompt, output, test case or dataset
- * text leaves it.
+ * text leaves it. Metric names are sent only when .complyd/ai.yml declares
+ * them (buildPayload), as a tool may build them from test text.
  */
 
 const bad = (format) => new ActionError('results', `The results file isn't readable as ${format} output: check --format and the file.`);
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+const numOrDecimal = (v) => (typeof v === 'string' && DECIMAL.test(v) ? Number(v) : num(v));
+const isMap = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const count = (v, format) => {
   if (v === undefined || v === null) return 0;
   if (!Number.isInteger(v) || v < 0 || v > MAX_COUNT) throw bad(format);
@@ -48,7 +53,7 @@ function providerModel(s) {
   if (!m) return undefined;
   const provider = m[1].toLowerCase();
   if (['file', 'http', 'https', 'python', 'exec', 'javascript', 'js', 'golang', 'ruby', 'webhook', 'echo', 'sequence'].includes(provider)) return undefined;
-  return PROVIDER.test(provider) && MODEL_ID.test(m[2]) ? { provider, id: m[2] } : undefined;
+  return PROVIDER.test(provider) && isModelId(m[2]) ? { provider, id: m[2] } : undefined;
 }
 
 /** promptfoo `eval -o results.json`: one suite per prompt × provider. */
@@ -60,6 +65,7 @@ function promptfoo(doc) {
     ranAt: isoTime(r.timestamp ?? doc.metadata?.evaluationCreatedAt),
     suites: r.prompts.map((p) => {
       const m = p?.metrics ?? {};
+      if (!isMap(m) || (m.namedScores !== undefined && !isMap(m.namedScores))) throw bad('promptfoo');
       const cases = { passed: count(m.testPassCount, 'promptfoo'), failed: count(m.testFailCount, 'promptfoo'), errored: count(m.testErrorCount, 'promptfoo') };
       cases.total = cases.passed + cases.failed + cases.errored;
       const metrics = [{ name: 'pass_rate', value: rate(cases.passed, cases.total) }];
@@ -146,7 +152,7 @@ function openaiEvals(doc) {
       }
       return {
         label: [r.name, r.eval_id].find((v) => typeof v === 'string' && v),
-        model: typeof r.model === 'string' && MODEL_ID.test(r.model) ? { provider: 'openai', id: r.model } : undefined,
+        model: isModelId(r.model) ? { provider: 'openai', id: r.model } : undefined,
         metrics,
         cases,
         passed: r.status === 'completed' && cases.failed + cases.errored === 0,
@@ -158,11 +164,12 @@ function openaiEvals(doc) {
 /**
  * lm-evaluation-harness `--output_path` results JSON: one suite per task.
  * It has no per-case verdicts, so cases stay 0 (the sample count goes to
- * the test set) and only thresholds from .complyd/ai.yml can pass a suite.
+ * the test set) and only thresholds from .complyd/ai.yml can pass a suite
+ * (buildPayload fails a suite with no cases and no threshold).
  */
 function lmEval(doc) {
   if (!doc?.results || typeof doc.results !== 'object' || Array.isArray(doc.results)) throw bad('lm-eval');
-  const modelId = [doc.model_name, /(?:^|,)(?:pretrained|model)=([^,]+)/.exec(doc.config?.model_args ?? '')?.[1]].find((v) => typeof v === 'string' && MODEL_ID.test(v));
+  const modelId = [doc.model_name, /(?:^|,)(?:pretrained|model)=([^,]+)/.exec(doc.config?.model_args ?? '')?.[1]].find(isModelId);
   const provider = typeof doc.config?.model === 'string' ? doc.config.model.toLowerCase() : undefined;
   return {
     tool: { name: 'lm-eval', version: cleanVersion(doc.lm_eval_version) },
@@ -195,26 +202,29 @@ function generic(doc) {
     tool: { name, version: cleanVersion(doc.tool?.version) },
     ranAt: isoTime(doc.ran_at),
     suites: doc.suites.map((s) => {
-      if (!s || typeof s.name !== 'string' || !Array.isArray(s.metrics ?? []) || (s.cases !== undefined && typeof s.cases !== 'object')) throw bad('generic');
+      if (!s || typeof s.name !== 'string' || !Array.isArray(s.metrics ?? []) || (s.cases !== undefined && !isMap(s.cases))) throw bad('generic');
       const c = s.cases ?? {};
-      const m = s.model;
+      const m = isMap(s.model) ? s.model : {};
+      const cases = { total: count(c.total, 'generic'), passed: count(c.passed, 'generic'), failed: count(c.failed, 'generic'), errored: count(c.errored, 'generic') };
       return {
         label: s.name,
         model:
-          m && PROVIDER.test(m.provider ?? '') && MODEL_ID.test(m.id ?? '')
+          typeof m.provider === 'string' && PROVIDER.test(m.provider) && isModelId(m.id)
             ? { provider: m.provider, id: m.id, ...(typeof m.version === 'string' && MODEL_VERSION.test(m.version) ? { version: m.version } : {}) }
             : undefined,
-        metrics: (s.metrics ?? []).map((x) => ({
-          name: metricName(x?.name ?? 'metric'),
-          value: typeof x?.value === 'string' && DECIMAL.test(x.value) ? Number(x.value) : num(x?.value),
-          threshold:
-            x?.threshold && ['gte', 'lte'].includes(x.threshold.direction) && num(Number(x.threshold.value)) !== undefined
-              ? { value: Number(x.threshold.value), direction: x.threshold.direction }
-              : undefined,
-          passed: typeof x?.passed === 'boolean' ? x.passed : undefined,
-        })),
-        cases: { total: count(c.total, 'generic'), passed: count(c.passed, 'generic'), failed: count(c.failed, 'generic'), errored: count(c.errored, 'generic') },
-        passed: typeof s.passed === 'boolean' ? s.passed : true,
+        metrics: (s.metrics ?? [])
+          .filter((x) => typeof x?.name === 'string')
+          .map((x) => ({
+            name: metricName(x.name),
+            value: numOrDecimal(x.value),
+            threshold:
+              isMap(x.threshold) && ['gte', 'lte'].includes(x.threshold.direction) && numOrDecimal(x.threshold.value) !== undefined
+                ? { value: numOrDecimal(x.threshold.value), direction: x.threshold.direction }
+                : undefined,
+            passed: typeof x.passed === 'boolean' ? x.passed : undefined,
+          })),
+        cases,
+        passed: typeof s.passed === 'boolean' ? s.passed : cases.failed + cases.errored === 0,
       };
     }),
   };
@@ -234,24 +244,34 @@ function decimal(n) {
 
 const meets = (v, t) => (t.direction === 'gte' ? v >= t.value : v <= t.value);
 
-/** A suite label safe to print (a promptfoo label may be the prompt's own text). */
-const shown = (label, i) => (typeof label === 'string' && /^[A-Za-z0-9 ._:/@+-]{1,64}$/.test(label) ? `"${label}"` : `#${i + 1} (unnamed)`);
+/** A suite label safe to print (a promptfoo label may be the prompt's own text, so no spaces). */
+const shown = (label, i) => (typeof label === 'string' && /^[A-Za-z0-9._:/@+-]{1,64}$/.test(label) ? `"${label}"` : `#${i + 1} (unnamed)`);
 
 /**
  * The parsed results + the config → ai_eval v1 payload. Each result suite
  * is matched to a config suite by `match:` (else `name:`), or to the only
- * suite when there is one. Warnings go to `warn`.
+ * suite when there is one and the results carry one label. Only metrics the
+ * suite declares under `metrics:` (and `pass_rate`) are sent. Warnings go to
+ * `warn` (at most MAX_WARNINGS, then a count).
  */
-function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, warn = () => {} }) {
+function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, warn: sink = () => {} }) {
   const errors = [];
-  let truncated = false;
+  let truncated = parsed.suites.length > MAX_SUITES;
   const suites = [];
   const covered = new Set();
-  parsed.suites.forEach((t, i) => {
+  const hashes = new Map();
+  let warned = 0;
+  const warn = (w) => {
+    warned += 1;
+    if (warned <= MAX_WARNINGS) sink(w);
+  };
+  // Several labels on one config suite would send results of different runs under one name.
+  const oneLabel = new Set(parsed.suites.map((t) => t.label)).size === 1;
+  parsed.suites.slice(0, MAX_SUITES).forEach((t, i) => {
     const c =
       cfg.suites.find((s) => s.match !== undefined && s.match === t.label) ??
       cfg.suites.find((s) => s.name === t.label) ??
-      (cfg.suites.length === 1 ? cfg.suites[0] : undefined);
+      (cfg.suites.length === 1 && oneLabel ? cfg.suites[0] : undefined);
     if (!c) {
       errors.push(`no suite in .complyd/ai.yml matches the results' suite ${shown(t.label, i)}: add match: to the suite it belongs to`);
       return;
@@ -264,13 +284,25 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
       return;
     }
     const dataset = c.dataset ? { ...cfg.datasets[c.dataset] } : undefined;
-    const datasetSha = dataset && hashFile(root, dataset.path, `datasets.${c.dataset}.path`);
-    const judge = c.evaluator.judge_model ?? (typeof t.judge === 'string' && /^[A-Za-z0-9._:/@+-]{1,200}$/.test(t.judge) ? t.judge : undefined);
+    const datasetSha = dataset && hashFile(root, dataset.path, `datasets.${c.dataset}.path`, hashes);
+    let judge = c.evaluator.judge_model;
+    if (!judge && t.judge !== undefined) {
+      if (isJudge(t.judge)) judge = t.judge;
+      else warn(`${c.name}: the results' judge model isn't a model id (a URL or a path?) and was left out: set evaluator.judge_model.`);
+    }
 
     let suitePassed = t.passed;
     const metrics = [];
+    let undeclared = 0;
     for (const m of t.metrics) {
-      const conf = c.metrics[m.name] ?? {};
+      const declared = Object.hasOwn(c.metrics, m.name);
+      if (!declared && m.name !== 'pass_rate') {
+        // Not sent, but its verdict still counts.
+        undeclared += 1;
+        if (m.passed === false || (m.threshold && num(m.value) !== undefined && !meets(m.value, m.threshold))) suitePassed = false;
+        continue;
+      }
+      const conf = declared ? c.metrics[m.name] : {};
       const value = decimal(m.value);
       if (value === undefined) {
         warn(`${c.name}: metric ${m.name} has no usable value and was left out.`);
@@ -288,6 +320,7 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
         passed,
       });
     }
+    if (undeclared) warn(`${c.name}: ${undeclared} metric(s) not listed under metrics: in .complyd/ai.yml were left out (list a metric there to send it).`);
     for (const name of Object.keys(c.metrics)) {
       if (c.metrics[name].threshold && !t.metrics.some((m) => m.name === name)) {
         warn(`${c.name}: metric ${name} (thresholded in .complyd/ai.yml) isn't in the results: the suite is marked failed.`);
@@ -298,6 +331,11 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
     metrics.sort((a, b) => Number(!!b.threshold) - Number(!!a.threshold));
     if (metrics.length > MAX_METRICS) truncated = true;
     if (metrics.some((m) => !m.passed)) suitePassed = false;
+    // No cases and no threshold: nothing was checked, so it can't have passed.
+    if (suitePassed && t.cases.total === 0 && !metrics.some((m) => m.threshold)) {
+      warn(`${c.name}: no cases and no thresholded metric in the results: the suite is marked failed.`);
+      suitePassed = false;
+    }
 
     const tsVersion = c.test_set.version ?? `sha256:${datasetSha.slice(0, 16)}`;
     suites.push({
@@ -305,7 +343,7 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
       role,
       model: { provider: model.provider, id: model.id, ...(model.version ? { version: model.version } : {}) },
       ...(c.prompt_version ? { prompt_version: c.prompt_version } : {}),
-      prompt_sha256: hashFiles(root, c.prompts, `${where}.prompts`),
+      prompt_sha256: hashFiles(root, c.prompts, `${where}.prompts`, hashes),
       ...(dataset ? { dataset: { ...(dataset.ref ? { ref: dataset.ref } : {}), sha256: datasetSha } } : {}),
       test_set: {
         version: tsVersion,
@@ -315,7 +353,7 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
       },
       evaluator: {
         ...(judge ? { judge_model: judge } : {}),
-        ...(c.evaluator.rubric ? { rubric_sha256: hashFile(root, c.evaluator.rubric, `${where}.evaluator.rubric`) } : {}),
+        ...(c.evaluator.rubric ? { rubric_sha256: hashFile(root, c.evaluator.rubric, `${where}.evaluator.rubric`, hashes) } : {}),
         version: c.evaluator.version ?? (parsed.tool.version === 'unknown' ? `${format}-unknown` : parsed.tool.version),
         parser: c.evaluator.parser ?? format,
       },
@@ -326,14 +364,14 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
   });
   if (errors.length) throw new ActionError('config', errors.slice(0, 5).join('; ') + '.');
   for (const s of cfg.suites) if (s.required && !covered.has(s.name)) warn(`Required suite ${s.name} isn't in these results.`);
-  if (suites.length > MAX_SUITES) truncated = true;
+  if (warned > MAX_WARNINGS) sink(`${warned - MAX_WARNINGS} more warnings not shown.`);
   return {
     tool: parsed.tool,
     format,
     commit,
     run_id: runId,
     ran_at: parsed.ranAt ?? ranAt,
-    suites: suites.slice(0, MAX_SUITES),
+    suites,
     truncated,
   };
 }
