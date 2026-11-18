@@ -1,0 +1,27 @@
+{
+  "name": "@complyd/pipeline",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Send your pipeline's dependency scan (SARIF or OSV-Scanner JSON) or SAST scan (SARIF) to Complyd from GitHub Actions, GitLab CI, CircleCI, Bitbucket Pipelines or any CI with an ingest key.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/complyd/complyd-pipeline-action.git"
+  },
+  "main": "src/index.js",
+  "bin": {
+    "complyd-pipeline": "src/cli.js",
+    "complyd-ci-scan": "src/ci-scan.js"
+  },
+  "files": [
+    "src/",
+    "action.yml"
+  ],
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

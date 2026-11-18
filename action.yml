@@ -1,0 +1,35 @@
+name: Complyd pipeline
+description: Send your pipeline's dependency scan (SARIF or OSV-Scanner JSON) or SAST scan (SARIF) to Complyd, signed in with the workflow's OIDC token.
+author: Complyd
+branding:
+  icon: shield
+  color: blue
+inputs:
+  trust:
+    description: The workload trust id from Complyd (Settings › Workload trusts), trw_…
+    required: true
+  audience:
+    description: The trust's audience, shown next to its id in Complyd.
+    required: true
+  results:
+    description: Path of the scanner's output file (SARIF 2.1.0 or OSV-Scanner JSON). For scan sast, SARIF only, and a directory of .sarif files or one path per line is merged into one scan.
+    required: true
+  scan:
+    description: dependencies (default; dependency also works) or sast. sast reads a SAST scanner's SARIF (CodeQL, Semgrep, …).
+    required: false
+    default: dependencies
+  format:
+    description: auto, sarif or osv. auto reads the file to tell.
+    required: false
+    default: auto
+  api-url:
+    description: For testing only. Complyd's address (https://api.complyd.ai or https://api-dev.complyd.ai); defaults to the audience's origin and must be on the audience's host.
+    required: false
+outputs:
+  observation:
+    description: The id Complyd gave the stored scan (obs_…).
+  dropped:
+    description: How many findings the action couldn't read (the scan is then marked cut).
+runs:
+  using: node24
+  main: src/main.js

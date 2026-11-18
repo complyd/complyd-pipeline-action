@@ -1,0 +1,63 @@
+{
+  "results": [
+    {
+      "source": { "path": "/home/runner/work/payments-api/package-lock.json", "type": "lockfile" },
+      "packages": [
+        {
+          "package": { "name": "example-template", "version": "4.17.20", "ecosystem": "npm" },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-35jh-r3h4-6jhm",
+              "aliases": ["CVE-2021-23337"],
+              "affected": [
+                {
+                  "package": { "name": "example-template", "ecosystem": "npm" },
+                  "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }, { "fixed": "4.17.21" }] }]
+                }
+              ],
+              "database_specific": { "severity": "HIGH" }
+            },
+            {
+              "id": "CVE-2021-23337",
+              "aliases": ["GHSA-35jh-r3h4-6jhm"],
+              "affected": []
+            }
+          ],
+          "groups": [{ "ids": ["CVE-2021-23337", "GHSA-35jh-r3h4-6jhm"], "max_severity": "7.2" }]
+        },
+        {
+          "package": { "name": "@example/parser", "version": "1.0.0", "ecosystem": "npm" },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-aaaa-bbbb-cccc",
+              "affected": [
+                {
+                  "package": { "name": "@example/parser", "ecosystem": "npm" },
+                  "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }, { "fixed": "1.0.1" }] }]
+                }
+              ],
+              "database_specific": { "severity": "CRITICAL" }
+            }
+          ],
+          "groups": [{ "ids": ["GHSA-aaaa-bbbb-cccc"], "max_severity": "" }]
+        }
+      ]
+    },
+    {
+      "source": { "path": "/home/runner/work/payments-api/requirements.txt", "type": "lockfile" },
+      "packages": [
+        {
+          "package": { "name": "example-http", "version": "2.0.0", "ecosystem": "PyPI" },
+          "vulnerabilities": [
+            { "id": "PYSEC-2024-1", "affected": [], "database_specific": { "severity": "MODERATE" } },
+            { "id": "GHSA-dddd-eeee-ffff", "affected": [] }
+          ],
+          "groups": [
+            { "ids": ["PYSEC-2024-1"], "max_severity": "5.3" },
+            { "ids": ["GHSA-dddd-eeee-ffff"] }
+          ]
+        }
+      ]
+    }
+  ]
+}

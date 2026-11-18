@@ -1,0 +1,76 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "invocations": [{ "executionSuccessful": true, "toolExecutionNotifications": [] }],
+      "tool": {
+        "driver": {
+          "name": "Semgrep OSS",
+          "semanticVersion": "1.95.0",
+          "rules": [
+            {
+              "id": "javascript.express.security.audit.xss.direct-response-write.direct-response-write",
+              "name": "javascript.express.security.audit.xss.direct-response-write.direct-response-write",
+              "defaultConfiguration": { "level": "warning" },
+              "properties": { "precision": "very-high", "tags": ["CWE-79", "MEDIUM CONFIDENCE", "OWASP-A07:2017", "security"] }
+            },
+            {
+              "id": "python.lang.security.audit.dangerous-subprocess-use.dangerous-subprocess-use",
+              "name": "python.lang.security.audit.dangerous-subprocess-use.dangerous-subprocess-use",
+              "defaultConfiguration": { "level": "error" },
+              "properties": { "tags": ["CWE-78", "HIGH CONFIDENCE", "security"] }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "javascript.express.security.audit.xss.direct-response-write.direct-response-write",
+          "level": "warning",
+          "message": { "text": "Detected directly writing to a Response object from user-defined input." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "apps/web/routes/profile.js", "uriBaseId": "%SRCROOT%" },
+                "region": { "startLine": 27, "startColumn": 5, "endLine": 27, "endColumn": 33, "snippet": { "text": "    res.send(req.query.name);" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "requires login" },
+          "properties": {}
+        },
+        {
+          "ruleId": "javascript.express.security.audit.xss.direct-response-write.direct-response-write",
+          "level": "warning",
+          "message": { "text": "Detected directly writing to a Response object from user-defined input." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "apps/web/routes/search.js" },
+                "region": { "startLine": 11, "snippet": { "text": "res.send(req.body.q)" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "requires login" },
+          "properties": {}
+        },
+        {
+          "ruleId": "python.lang.security.audit.dangerous-subprocess-use.dangerous-subprocess-use",
+          "level": "error",
+          "message": { "text": "Detected subprocess function with argument tainted by user input." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "tools/export/run_job.py" },
+                "region": { "startLine": 88, "snippet": { "text": "subprocess.run(cmd, shell=True)" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "9f2c4e6a8b0d1f3e5a7c9e1b3d5f7a9c" },
+          "properties": {}
+        }
+      ]
+    }
+  ]
+}

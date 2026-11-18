@@ -1,0 +1,55 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Trivy",
+          "version": "0.56.2",
+          "rules": [
+            {
+              "id": "CVE-2022-25883",
+              "properties": { "security-severity": "7.5", "tags": ["vulnerability", "security", "HIGH"] }
+            },
+            {
+              "id": "CVE-2024-0001",
+              "properties": { "tags": ["vulnerability", "security", "LOW"] }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-2022-25883",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Package: example-semver\nInstalled Version: 7.3.7\nVulnerability CVE-2022-25883\nSeverity: HIGH\nFixed Version: 7.5.2\nLink: [CVE-2022-25883](https://avd.aquasec.com/nvd/cve-2022-25883)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "services/web/package-lock.json", "uriBaseId": "ROOTPATH" },
+                "region": { "startLine": 1 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-0001",
+          "ruleIndex": 1,
+          "level": "note",
+          "message": { "text": "Package: example-yaml\nInstalled Version: 0.1.0\nVulnerability CVE-2024-0001\nSeverity: LOW\nFixed Version: \nLink: x" },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "Cargo.lock" } } }]
+        },
+        {
+          "ruleId": "CVE-2024-0002",
+          "level": "warning",
+          "message": { "text": "Something without a package line" },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "Dockerfile" } } }]
+        }
+      ]
+    }
+  ]
+}

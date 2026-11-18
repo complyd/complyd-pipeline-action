@@ -1,0 +1,20 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": { "driver": { "name": "grype", "semanticVersion": "0.80.0", "rules": [] } },
+      "results": [
+        {
+          "ruleId": "GHSA-xxxx-yyyy-zzzz-example-core",
+          "message": { "text": "A vulnerability in pkg:maven/org.example/example-core@2.14.1 found in the image" },
+          "properties": { "security-severity": "10.0" }
+        },
+        {
+          "ruleId": "CVE-2023-1111-example-lib",
+          "message": { "text": "found" },
+          "properties": { "purls": ["pkg:pypi/example-lib@1.0"] }
+        }
+      ]
+    }
+  ]
+}

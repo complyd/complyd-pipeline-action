@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeQL",
+          "organization": "GitHub",
+          "semanticVersion": "2.19.3",
+          "rules": [
+            {
+              "id": "js/sql-injection",
+              "name": "js/sql-injection",
+              "defaultConfiguration": { "level": "error" },
+              "properties": { "tags": ["security", "external/cwe/cwe-089"], "security-severity": "8.8" }
+            },
+            {
+              "id": "js/code-injection",
+              "name": "js/code-injection",
+              "defaultConfiguration": { "level": "error" },
+              "properties": { "tags": ["security"], "security-severity": "9.3" }
+            },
+            {
+              "id": "js/unused-local-variable",
+              "name": "js/unused-local-variable",
+              "defaultConfiguration": { "level": "note" },
+              "properties": { "tags": ["maintainability"] }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "js/sql-injection",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": { "text": "This query string depends on a [user-provided value](1)." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "services/billing-internal/db.js", "uriBaseId": "%SRCROOT%" },
+                "region": { "startLine": 42, "startColumn": 18, "endColumn": 61 }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "5a8c1e2f9b7d4c30:1", "primaryLocationStartColumnFingerprint": "13" }
+        },
+        {
+          "ruleId": "js/sql-injection",
+          "ruleIndex": 0,
+          "message": { "text": "This query string depends on a [user-provided value](1)." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "services/billing-internal/report.js" },
+                "region": { "startLine": 7 }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "77f0d3a1c4b2e981:1" }
+        },
+        {
+          "ruleId": "js/code-injection",
+          "ruleIndex": 1,
+          "message": { "text": "This code execution depends on a [user-provided value](1)." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "web/handlers/template.js" },
+                "region": { "startLine": 19 }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "0c9e8b7a6d5f4e3c:1" }
+        },
+        {
+          "ruleId": "js/unused-local-variable",
+          "ruleIndex": 2,
+          "level": "note",
+          "message": { "text": "Unused variable tmp." },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "web/util.js" }, "region": { "startLine": 3 } } }],
+          "partialFingerprints": { "primaryLocationLineHash": "1111222233334444:1" }
+        },
+        {
+          "ruleId": "js/code-injection",
+          "ruleIndex": 1,
+          "message": { "text": "Dismissed in code scanning." },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "scripts/dev.js" }, "region": { "startLine": 1 } } }],
+          "partialFingerprints": { "primaryLocationLineHash": "aaaabbbbccccdddd:1" },
+          "suppressions": [{ "kind": "external", "status": "accepted", "justification": "dev only" }]
+        }
+      ]
+    }
+  ]
+}
