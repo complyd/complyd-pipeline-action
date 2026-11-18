@@ -1,0 +1,356 @@
+'use strict';
+
+const { createHash } = require('crypto');
+const { ActionError } = require('./reduce');
+const { hashFile, hashFiles, NAME, PROVIDER, MODEL_ID, MODEL_VERSION, METRIC } = require('./ai-config');
+const { MAX_BODY_BYTES } = require('./post');
+
+const FORMATS = ['promptfoo', 'deepeval', 'openai-evals', 'lm-eval', 'generic'];
+const ROLES = ['baseline', 'candidate'];
+const MAX_SUITES = 50;
+const MAX_METRICS = 50;
+const MAX_COUNT = 10_000_000;
+const TOOL_NAME = /^[A-Za-z0-9 ._/@+-]{1,64}$/;
+const TOOL_VERSION = /^[A-Za-z0-9._+-]{1,40}$/;
+const DECIMAL = /^-?[0-9]{1,12}(\.[0-9]{1,9})?$/;
+
+/*
+ * Each parser reads a tool's results document and keeps only numbers, model
+ * ids, metric names and the tool's suite label (used to find the suite in
+ * .complyd/ai.yml, never sent): no prompt, output, test case or dataset
+ * text leaves it.
+ */
+
+const bad = (format) => new ActionError('results', `The results file isn't readable as ${format} output: check --format and the file.`);
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+const count = (v, format) => {
+  if (v === undefined || v === null) return 0;
+  if (!Number.isInteger(v) || v < 0 || v > MAX_COUNT) throw bad(format);
+  return v;
+};
+const cleanVersion = (v) => {
+  const s = typeof v === 'number' ? String(v) : v;
+  return typeof s === 'string' && TOOL_VERSION.test(s) ? s : 'unknown';
+};
+const isoTime = (v) => {
+  if (v === undefined || v === null || v === '') return undefined;
+  const d = typeof v === 'number' ? new Date(v < 1e11 ? v * 1000 : v) : new Date(v);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+};
+/** A metric name the schema takes: other characters become '-'. */
+const metricName = (s) => String(s).replace(/[^A-Za-z0-9 ._:/@+-]/g, '-').slice(0, 64) || 'metric';
+const rate = (part, total) => (total > 0 ? part / total : undefined);
+
+/** "openai:chat:gpt-4o" → { provider: openai, id: gpt-4o }; undefined for files, URLs and scripts. */
+function providerModel(s) {
+  if (typeof s !== 'string') return undefined;
+  const m = /^([A-Za-z0-9._-]+):(?:(?:chat|completion|completions|messages|responses|embedding|embeddings):)?(.+)$/.exec(s);
+  if (!m) return undefined;
+  const provider = m[1].toLowerCase();
+  if (['file', 'http', 'https', 'python', 'exec', 'javascript', 'js', 'golang', 'ruby', 'webhook', 'echo', 'sequence'].includes(provider)) return undefined;
+  return PROVIDER.test(provider) && MODEL_ID.test(m[2]) ? { provider, id: m[2] } : undefined;
+}
+
+/** promptfoo `eval -o results.json`: one suite per prompt × provider. */
+function promptfoo(doc) {
+  const r = doc?.results;
+  if (!r || !Array.isArray(r.prompts) || !r.prompts.length) throw bad('promptfoo');
+  return {
+    tool: { name: 'promptfoo', version: cleanVersion(doc.metadata?.promptfooVersion) },
+    ranAt: isoTime(r.timestamp ?? doc.metadata?.evaluationCreatedAt),
+    suites: r.prompts.map((p) => {
+      const m = p?.metrics ?? {};
+      const cases = { passed: count(m.testPassCount, 'promptfoo'), failed: count(m.testFailCount, 'promptfoo'), errored: count(m.testErrorCount, 'promptfoo') };
+      cases.total = cases.passed + cases.failed + cases.errored;
+      const metrics = [{ name: 'pass_rate', value: rate(cases.passed, cases.total) }];
+      for (const [k, v] of Object.entries(m.namedScores ?? {})) {
+        const n = num(m.namedScoresCount?.[k]) || cases.total;
+        metrics.push({ name: metricName(k), value: n ? num(v) / n : undefined });
+      }
+      return {
+        label: typeof p?.label === 'string' ? p.label : undefined,
+        model: providerModel(typeof p?.provider === 'string' ? p.provider : p?.provider?.id),
+        metrics,
+        cases,
+        passed: cases.failed + cases.errored === 0,
+      };
+    }),
+  };
+}
+
+/** DeepEval's test run (.deepeval/.latest_test_run.json): one suite, metrics averaged over its cases. */
+const LOWER_IS_BETTER = /^(bias|toxicity|hallucination)( metric)?$/i;
+function deepeval(doc) {
+  const testCases = [...(Array.isArray(doc?.testCases) ? doc.testCases : []), ...(Array.isArray(doc?.conversationalTestCases) ? doc.conversationalTestCases : [])];
+  if (!Array.isArray(doc?.testCases) && !Array.isArray(doc?.conversationalTestCases)) throw bad('deepeval');
+  const cases = { total: testCases.length, passed: 0, failed: 0, errored: 0 };
+  const byMetric = new Map();
+  let judge;
+  for (const tc of testCases) {
+    const data = Array.isArray(tc?.metricsData) ? tc.metricsData : [];
+    const errored = data.some((d) => d?.error);
+    if (errored) cases.errored += 1;
+    else if (tc?.success === true) cases.passed += 1;
+    else cases.failed += 1;
+    for (const d of data) {
+      if (typeof d?.name !== 'string') continue;
+      const agg = byMetric.get(d.name) ?? { sum: 0, n: 0, threshold: undefined, passed: true };
+      if (num(d.score) !== undefined) {
+        agg.sum += d.score;
+        agg.n += 1;
+      }
+      if (agg.threshold === undefined && num(d.threshold) !== undefined) agg.threshold = d.threshold;
+      if (d.success !== true || d.error) agg.passed = false;
+      byMetric.set(d.name, agg);
+      if (!judge && typeof d.evaluationModel === 'string') judge = d.evaluationModel;
+    }
+  }
+  const metrics = [...byMetric].map(([name, a]) => ({
+    name: metricName(name),
+    value: a.n ? a.sum / a.n : undefined,
+    threshold: a.threshold === undefined ? undefined : { value: a.threshold, direction: LOWER_IS_BETTER.test(name) ? 'lte' : 'gte' },
+    passed: a.passed,
+  }));
+  const hp = doc.hyperparameters?.model;
+  return {
+    tool: { name: 'deepeval', version: 'unknown' },
+    ranAt: undefined,
+    suites: [
+      {
+        label: [doc.identifier, doc.testFile].find((v) => typeof v === 'string' && v),
+        model: providerModel(typeof hp === 'string' ? hp.replace('/', ':') : undefined),
+        judge,
+        metrics,
+        cases,
+        passed: cases.total > 0 && cases.failed + cases.errored === 0,
+      },
+    ],
+  };
+}
+
+/** An OpenAI Evals API run (`GET /v1/evals/{id}/runs/{run_id}`), or a list of them. */
+function openaiEvals(doc) {
+  const runs = doc?.object === 'list' && Array.isArray(doc.data) ? doc.data : [doc];
+  if (!runs.length || !runs.every((r) => r?.object === 'eval.run' && r.result_counts)) throw bad('openai-evals');
+  return {
+    tool: { name: 'openai-evals', version: 'v1' },
+    ranAt: isoTime(runs[0].created_at),
+    suites: runs.map((r) => {
+      const c = r.result_counts;
+      const cases = { total: count(c.total, 'openai-evals'), passed: count(c.passed, 'openai-evals'), failed: count(c.failed, 'openai-evals'), errored: count(c.errored, 'openai-evals') };
+      const metrics = [{ name: 'pass_rate', value: rate(cases.passed, cases.total) }];
+      for (const t of Array.isArray(r.per_testing_criteria_results) ? r.per_testing_criteria_results : []) {
+        const p = count(t?.passed, 'openai-evals');
+        const f = count(t?.failed, 'openai-evals');
+        if (typeof t?.testing_criteria === 'string') metrics.push({ name: metricName(t.testing_criteria), value: rate(p, p + f), passed: f === 0 });
+      }
+      return {
+        label: [r.name, r.eval_id].find((v) => typeof v === 'string' && v),
+        model: typeof r.model === 'string' && MODEL_ID.test(r.model) ? { provider: 'openai', id: r.model } : undefined,
+        metrics,
+        cases,
+        passed: r.status === 'completed' && cases.failed + cases.errored === 0,
+      };
+    }),
+  };
+}
+
+/**
+ * lm-evaluation-harness `--output_path` results JSON: one suite per task.
+ * It has no per-case verdicts, so cases stay 0 (the sample count goes to
+ * the test set) and only thresholds from .complyd/ai.yml can pass a suite.
+ */
+function lmEval(doc) {
+  if (!doc?.results || typeof doc.results !== 'object' || Array.isArray(doc.results)) throw bad('lm-eval');
+  const modelId = [doc.model_name, /(?:^|,)(?:pretrained|model)=([^,]+)/.exec(doc.config?.model_args ?? '')?.[1]].find((v) => typeof v === 'string' && MODEL_ID.test(v));
+  const provider = typeof doc.config?.model === 'string' ? doc.config.model.toLowerCase() : undefined;
+  return {
+    tool: { name: 'lm-eval', version: cleanVersion(doc.lm_eval_version) },
+    ranAt: isoTime(doc.date),
+    suites: Object.entries(doc.results).map(([task, r]) => {
+      const metrics = [];
+      for (const [key, v] of Object.entries(r ?? {})) {
+        const [metric, filter] = key.split(',');
+        if (filter === undefined || metric.endsWith('_stderr') || num(v) === undefined) continue;
+        metrics.push({ name: metricName(filter === 'none' ? metric : `${metric}:${filter}`), value: v });
+      }
+      const samples = doc['n-samples']?.[task];
+      return {
+        label: task,
+        model: modelId && provider && PROVIDER.test(provider) ? { provider, id: modelId } : undefined,
+        metrics,
+        cases: { total: 0, passed: 0, failed: 0, errored: 0 },
+        testSetCases: Number.isInteger(samples?.effective) ? samples.effective : Number.isInteger(samples?.original) ? samples.original : undefined,
+        passed: true,
+      };
+    }),
+  };
+}
+
+/** Complyd's generic shape, for any other harness (see the README). */
+function generic(doc) {
+  if (!doc || !Array.isArray(doc.suites) || !doc.suites.length) throw bad('generic');
+  const name = typeof doc.tool?.name === 'string' && TOOL_NAME.test(doc.tool.name) ? doc.tool.name : 'generic';
+  return {
+    tool: { name, version: cleanVersion(doc.tool?.version) },
+    ranAt: isoTime(doc.ran_at),
+    suites: doc.suites.map((s) => {
+      if (!s || typeof s.name !== 'string' || !Array.isArray(s.metrics ?? []) || (s.cases !== undefined && typeof s.cases !== 'object')) throw bad('generic');
+      const c = s.cases ?? {};
+      const m = s.model;
+      return {
+        label: s.name,
+        model:
+          m && PROVIDER.test(m.provider ?? '') && MODEL_ID.test(m.id ?? '')
+            ? { provider: m.provider, id: m.id, ...(typeof m.version === 'string' && MODEL_VERSION.test(m.version) ? { version: m.version } : {}) }
+            : undefined,
+        metrics: (s.metrics ?? []).map((x) => ({
+          name: metricName(x?.name ?? 'metric'),
+          value: typeof x?.value === 'string' && DECIMAL.test(x.value) ? Number(x.value) : num(x?.value),
+          threshold:
+            x?.threshold && ['gte', 'lte'].includes(x.threshold.direction) && num(Number(x.threshold.value)) !== undefined
+              ? { value: Number(x.threshold.value), direction: x.threshold.direction }
+              : undefined,
+          passed: typeof x?.passed === 'boolean' ? x.passed : undefined,
+        })),
+        cases: { total: count(c.total, 'generic'), passed: count(c.passed, 'generic'), failed: count(c.failed, 'generic'), errored: count(c.errored, 'generic') },
+        passed: typeof s.passed === 'boolean' ? s.passed : true,
+      };
+    }),
+  };
+}
+
+const PARSERS = { promptfoo, deepeval, 'openai-evals': openaiEvals, 'lm-eval': lmEval, generic };
+
+/** A number as the schema's decimal string (≤ 12 integer and 9 fraction digits), else undefined. */
+function decimal(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n) || Math.abs(n) >= 1e12) return undefined;
+  const s = n
+    .toFixed(9)
+    .replace(/(\.\d*?)0+$/, '$1')
+    .replace(/\.$/, '');
+  return s === '-0' ? '0' : s;
+}
+
+const meets = (v, t) => (t.direction === 'gte' ? v >= t.value : v <= t.value);
+
+/** A suite label safe to print (a promptfoo label may be the prompt's own text). */
+const shown = (label, i) => (typeof label === 'string' && /^[A-Za-z0-9 ._:/@+-]{1,64}$/.test(label) ? `"${label}"` : `#${i + 1} (unnamed)`);
+
+/**
+ * The parsed results + the config → ai_eval v1 payload. Each result suite
+ * is matched to a config suite by `match:` (else `name:`), or to the only
+ * suite when there is one. Warnings go to `warn`.
+ */
+function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, warn = () => {} }) {
+  const errors = [];
+  let truncated = false;
+  const suites = [];
+  const covered = new Set();
+  parsed.suites.forEach((t, i) => {
+    const c =
+      cfg.suites.find((s) => s.match !== undefined && s.match === t.label) ??
+      cfg.suites.find((s) => s.name === t.label) ??
+      (cfg.suites.length === 1 ? cfg.suites[0] : undefined);
+    if (!c) {
+      errors.push(`no suite in .complyd/ai.yml matches the results' suite ${shown(t.label, i)}: add match: to the suite it belongs to`);
+      return;
+    }
+    covered.add(c.name);
+    const where = `suites[${c.index}]`;
+    const model = c.model ?? t.model;
+    if (!model) {
+      errors.push(`${where}.model: the results don't name the model (provider and id): set model: { provider: …, id: … }`);
+      return;
+    }
+    const dataset = c.dataset ? { ...cfg.datasets[c.dataset] } : undefined;
+    const datasetSha = dataset && hashFile(root, dataset.path, `datasets.${c.dataset}.path`);
+    const judge = c.evaluator.judge_model ?? (typeof t.judge === 'string' && /^[A-Za-z0-9._:/@+-]{1,200}$/.test(t.judge) ? t.judge : undefined);
+
+    let suitePassed = t.passed;
+    const metrics = [];
+    for (const m of t.metrics) {
+      const conf = c.metrics[m.name] ?? {};
+      const value = decimal(m.value);
+      if (value === undefined) {
+        warn(`${c.name}: metric ${m.name} has no usable value and was left out.`);
+        if (conf.threshold) suitePassed = false;
+        continue;
+      }
+      // The config's threshold wins over the tool's.
+      const threshold = conf.threshold ?? m.threshold;
+      const passed = (m.passed ?? true) && (threshold ? meets(m.value, threshold) : true);
+      metrics.push({
+        name: m.name,
+        ...(conf.category ? { category: conf.category } : {}),
+        value,
+        ...(threshold ? { threshold: { value: decimal(threshold.value), direction: threshold.direction } } : {}),
+        passed,
+      });
+    }
+    for (const name of Object.keys(c.metrics)) {
+      if (c.metrics[name].threshold && !t.metrics.some((m) => m.name === name)) {
+        warn(`${c.name}: metric ${name} (thresholded in .complyd/ai.yml) isn't in the results: the suite is marked failed.`);
+        suitePassed = false;
+      }
+    }
+    // Thresholded metrics first, so a cut keeps the ones that decide.
+    metrics.sort((a, b) => Number(!!b.threshold) - Number(!!a.threshold));
+    if (metrics.length > MAX_METRICS) truncated = true;
+    if (metrics.some((m) => !m.passed)) suitePassed = false;
+
+    const tsVersion = c.test_set.version ?? `sha256:${datasetSha.slice(0, 16)}`;
+    suites.push({
+      name: c.name,
+      role,
+      model: { provider: model.provider, id: model.id, ...(model.version ? { version: model.version } : {}) },
+      ...(c.prompt_version ? { prompt_version: c.prompt_version } : {}),
+      prompt_sha256: hashFiles(root, c.prompts, `${where}.prompts`),
+      ...(dataset ? { dataset: { ...(dataset.ref ? { ref: dataset.ref } : {}), sha256: datasetSha } } : {}),
+      test_set: {
+        version: tsVersion,
+        cases: Math.min(t.testSetCases ?? t.cases.total, MAX_COUNT),
+        ...(c.test_set.selection ? { selection: c.test_set.selection } : {}),
+        ...(c.test_set.expected_version ? { expected_version: c.test_set.expected_version } : {}),
+      },
+      evaluator: {
+        ...(judge ? { judge_model: judge } : {}),
+        ...(c.evaluator.rubric ? { rubric_sha256: hashFile(root, c.evaluator.rubric, `${where}.evaluator.rubric`) } : {}),
+        version: c.evaluator.version ?? (parsed.tool.version === 'unknown' ? `${format}-unknown` : parsed.tool.version),
+        parser: c.evaluator.parser ?? format,
+      },
+      metrics: metrics.slice(0, MAX_METRICS),
+      cases: t.cases,
+      passed: suitePassed,
+    });
+  });
+  if (errors.length) throw new ActionError('config', errors.slice(0, 5).join('; ') + '.');
+  for (const s of cfg.suites) if (s.required && !covered.has(s.name)) warn(`Required suite ${s.name} isn't in these results.`);
+  if (suites.length > MAX_SUITES) truncated = true;
+  return {
+    tool: parsed.tool,
+    format,
+    commit,
+    run_id: runId,
+    ran_at: parsed.ranAt ?? ranAt,
+    suites: suites.slice(0, MAX_SUITES),
+    truncated,
+  };
+}
+
+/** The envelope's bytes under the route's cap: trailing suites go first and the run is marked truncated. */
+function fitSuites(env) {
+  let body = JSON.stringify(env);
+  let n = env.payload.suites.length;
+  while (Buffer.byteLength(body) > MAX_BODY_BYTES && n > 1) {
+    n -= 1;
+    body = JSON.stringify({ ...env, payload: { ...env.payload, suites: env.payload.suites.slice(0, n), truncated: true } });
+  }
+  return body;
+}
+
+/** The envelope id for one results file of one run: a retry is a duplicate, baseline and candidate are two. */
+const aiEnvelopeId = (runKey, role, format, input) =>
+  `${runKey}-ai_eval-${createHash('sha256').update(`${role}\n${format}\n${input}`).digest('hex').slice(0, 8)}`;
+
+module.exports = { PARSERS, FORMATS, ROLES, buildPayload, fitSuites, aiEnvelopeId, decimal, providerModel };

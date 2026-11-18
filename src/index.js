@@ -3,7 +3,9 @@
 const { appendFileSync } = require('fs');
 const { ActionError } = require('./reduce');
 const { oidcToken, allowedApiUrl, audienceAllowed } = require('./post');
-const { scan: push, summary, droppedLine, errorLine, escape, MAX_RESULTS_BYTES, MAX_RESULT_FILES } = require('./scan');
+const { FORMATS, ROLES } = require('./ai-eval');
+const { DEFAULT_CONFIG } = require('./ai-config');
+const { scan: push, scanAi, aiSummary, summary, droppedLine, errorLine, escape, MAX_RESULTS_BYTES, MAX_RESULT_FILES } = require('./scan');
 
 /** An action input (GitHub passes `with:` values as INPUT_<NAME> variables). */
 const input = (env, name) => (env[`INPUT_${name.toUpperCase()}`] ?? '').trim();
@@ -18,12 +20,19 @@ const input = (env, name) => (env[`INPUT_${name.toUpperCase()}`] ?? '').trim();
 async function run(env = process.env, { fetchImpl = fetch, now = () => new Date(), sleep } = {}) {
   const trust = input(env, 'trust');
   const audience = input(env, 'audience');
-  const results = input(env, 'results');
+  // `input` is the ai_eval spelling; either names the file.
+  const results = input(env, 'results') || input(env, 'input');
   // `dependencies` is the CLI's word; `dependency` the 1.0 input, kept.
-  const SCANS = { '': 'dependency', dependency: 'dependency', dependencies: 'dependency', sast: 'sast' };
+  const SCANS = { '': 'dependency', dependency: 'dependency', dependencies: 'dependency', sast: 'sast', ai_eval: 'ai_eval' };
   const scanInput = input(env, 'scan');
   const scan = Object.hasOwn(SCANS, scanInput) ? SCANS[scanInput] : undefined;
-  if (!scan) throw new ActionError('input', 'Set `scan` to dependencies (default) or sast.');
+  if (!scan) throw new ActionError('input', 'Set `scan` to dependencies (default), sast or ai_eval.');
+  const format = input(env, 'format') || 'auto';
+  const role = input(env, 'role') || 'candidate';
+  if (scan === 'ai_eval') {
+    if (!FORMATS.includes(format)) throw new ActionError('input', `Set \`format\` to the eval tool: ${FORMATS.join(', ')}.`);
+    if (!ROLES.includes(role)) throw new ActionError('input', 'Set `role` to candidate (default) or baseline.');
+  }
   if (!/^trw_[0-9a-f-]{36}$/.test(trust)) {
     throw new ActionError('input', 'Set `trust` to the trust id from Complyd (trw_…).');
   }
@@ -40,7 +49,7 @@ async function run(env = process.env, { fetchImpl = fetch, now = () => new Date(
       "Complyd's address must be https://api.complyd.ai: check `audience` (and `api-url`, which is for testing only and must match the audience's host).",
     );
   }
-  if (!results) throw new ActionError('input', "Set `results` to the scanner's output file.");
+  if (!results) throw new ActionError('input', "Set `results` (or `input`) to the scanner's output file.");
   const repositoryId = env.GITHUB_REPOSITORY_ID;
   if (!/^[0-9]{1,20}$/.test(repositoryId ?? '')) {
     throw new ActionError('input', 'This runs only in GitHub Actions (GITHUB_REPOSITORY_ID is missing).');
@@ -52,11 +61,29 @@ async function run(env = process.env, { fetchImpl = fetch, now = () => new Date(
   }
 
   const getToken = () => oidcToken(env, audience, fetchImpl, sleep);
+  if (scan === 'ai_eval') {
+    return scanAi(
+      {
+        input: results,
+        format,
+        role,
+        configPath: input(env, 'suite-config') || DEFAULT_CONFIG,
+        commit: env.GITHUB_SHA?.toLowerCase(),
+        subject: `github:${repositoryId}`,
+        runKey: `${runId}-${runAttempt}`,
+        workspace: env.GITHUB_WORKSPACE || process.cwd(),
+        apiUrl,
+        trust,
+        getToken,
+      },
+      { fetchImpl, now, sleep },
+    );
+  }
   return push(
     {
       results,
       scan,
-      format: input(env, 'format') || 'auto',
+      format,
       commit: env.GITHUB_SHA,
       subject: `github:${repositoryId}`,
       runKey: `${runId}-${runAttempt}`,
@@ -75,7 +102,15 @@ async function main(env = process.env) {
     if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `${name}=${escape(value)}\n`);
   };
   try {
-    const { answer, payload, dropped } = await run(env);
+    const r = await run(env);
+    if (r.envelope) {
+      for (const w of r.warnings) console.log(`::warning::${escape(w)}`);
+      for (const line of aiSummary(r)) console.log(escape(line));
+      out('observation', r.answer.observation);
+      out('dropped', '0');
+      return;
+    }
+    const { answer, payload, dropped } = r;
     const [sent, stored] = summary({ answer, payload });
     console.log(sent);
     if (dropped.count) console.log(`::warning::${escape(droppedLine(dropped))}`);

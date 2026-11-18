@@ -1,5 +1,5 @@
 name: Complyd pipeline
-description: Send your pipeline's dependency scan (SARIF or OSV-Scanner JSON) or SAST scan (SARIF) to Complyd, signed in with the workflow's OIDC token.
+description: Send your pipeline's dependency scan, SAST scan or AI eval results to Complyd, signed in with the workflow's OIDC token.
 author: Complyd
 branding:
   icon: shield
@@ -12,16 +12,27 @@ inputs:
     description: The trust's audience, shown next to its id in Complyd.
     required: true
   results:
-    description: Path of the scanner's output file (SARIF 2.1.0 or OSV-Scanner JSON). For scan sast, SARIF only, and a directory of .sarif files or one path per line is merged into one scan.
-    required: true
+    description: Path of the scanner's output file (SARIF 2.1.0 or OSV-Scanner JSON). For scan sast, SARIF only, and a directory of .sarif files or one path per line is merged into one scan. Set this or `input`.
+    required: false
+  input:
+    description: Same as `results` (the name scan ai_eval uses), e.g. the eval tool's results file.
+    required: false
   scan:
-    description: dependencies (default; dependency also works) or sast. sast reads a SAST scanner's SARIF (CodeQL, Semgrep, …).
+    description: dependencies (default; dependency also works), sast or ai_eval. sast reads a SAST scanner's SARIF (CodeQL, Semgrep, …); ai_eval an AI eval tool's results with .complyd/ai.yml.
     required: false
     default: dependencies
   format:
-    description: auto, sarif or osv. auto reads the file to tell.
+    description: auto, sarif or osv (auto reads the file to tell). For scan ai_eval, the eval tool: promptfoo, deepeval, openai-evals, lm-eval or generic.
     required: false
     default: auto
+  role:
+    description: scan ai_eval only. candidate (default, the change being released) or baseline (the version in production, re-run for comparison).
+    required: false
+    default: candidate
+  suite-config:
+    description: scan ai_eval only. Path of the AI config in the repository.
+    required: false
+    default: .complyd/ai.yml
   api-url:
     description: For testing only. Complyd's address (https://api.complyd.ai or https://api-dev.complyd.ai); defaults to the audience's origin and must be on the audience's host.
     required: false

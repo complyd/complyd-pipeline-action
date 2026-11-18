@@ -1,0 +1,438 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { join } = require('path');
+const { createHash } = require('crypto');
+const { execFileSync } = require('child_process');
+const { mkdtempSync, writeFileSync, readFileSync, mkdirSync, cpSync } = require('fs');
+const { tmpdir } = require('os');
+const { parseYaml } = require('../src/yaml');
+const { parseConfig, hashFiles } = require('../src/ai-config');
+const { PARSERS, FORMATS, buildPayload, decimal, providerModel, aiEnvelopeId } = require('../src/ai-eval');
+const { deployRecord, sections, splitModel } = require('../src/ai-release');
+const { main } = require('../src/cli');
+const { run } = require('../src/index');
+
+const AI = join(__dirname, 'fixtures', 'ai');
+const REPO = join(AI, 'repo');
+const SHA = 'c'.repeat(40);
+const KEY = 'cing_abc123_' + 'k'.repeat(43);
+const TRUST = 'trw_11111111-1111-4111-8111-111111111111';
+const sha = (b) => createHash('sha256').update(b).digest('hex');
+const fixture = (f) => JSON.parse(readFileSync(join(AI, `${f}.json`), 'utf8'));
+const config = () => parseConfig(readFileSync(join(REPO, '.complyd', 'ai.yml'), 'utf8'));
+const payloadOf = (format, role = 'candidate') =>
+  buildPayload(PARSERS[format](fixture(format)), config(), { format, role, commit: SHA, runId: 'gitlab-555', ranAt: '2026-11-19T08:00:00.000Z', root: REPO });
+
+/** The ai_eval v1 schema's shape and patterns, checked by hand (the action has no JSON Schema validator). */
+function assertSchema(p) {
+  const keys = (o, req, opt = []) => {
+    for (const k of req) assert.ok(Object.hasOwn(o, k), `missing ${k}`);
+    for (const k of Object.keys(o)) assert.ok(req.includes(k) || opt.includes(k), `unexpected ${k}`);
+  };
+  const re = (v, r, what) => assert.match(String(v), r, what);
+  const count = (n) => assert.ok(Number.isInteger(n) && n >= 0 && n <= 10_000_000, `count ${n}`);
+  const HEX = /^[0-9a-f]{64}$/;
+  const REF = /^[A-Za-z0-9._:/@+-]{1,64}$/;
+  const DEC = /^-?[0-9]{1,12}(\.[0-9]{1,9})?$/;
+  keys(p, ['tool', 'format', 'commit', 'run_id', 'ran_at', 'suites', 'truncated']);
+  keys(p.tool, ['name', 'version']);
+  re(p.tool.name, /^[A-Za-z0-9 ._/@+-]{1,64}$/);
+  re(p.tool.version, /^[A-Za-z0-9._+-]{1,40}$/);
+  assert.ok(FORMATS.includes(p.format));
+  re(p.commit, /^([0-9a-f]{40}|[0-9a-f]{64})$/);
+  re(p.run_id, /^[A-Za-z0-9._:/-]{1,128}$/);
+  assert.equal(new Date(p.ran_at).toISOString(), p.ran_at);
+  assert.ok(p.suites.length >= 1 && p.suites.length <= 50);
+  assert.equal(typeof p.truncated, 'boolean');
+  for (const s of p.suites) {
+    keys(s, ['name', 'role', 'model', 'prompt_sha256', 'test_set', 'evaluator', 'metrics', 'cases', 'passed'], ['prompt_version', 'dataset', 'run_conditions_sha256', 'rescored', 'anchor_check']);
+    re(s.name, /^[A-Za-z0-9 ._:/@+-]{1,128}$/);
+    assert.ok(['baseline', 'candidate'].includes(s.role));
+    keys(s.model, ['provider', 'id'], ['version']);
+    re(s.model.provider, /^[a-z0-9][a-z0-9._-]{0,63}$/);
+    re(s.model.id, /^[A-Za-z0-9._:/@+-]{1,128}$/);
+    if (s.model.version) re(s.model.version, /^[A-Za-z0-9._:/@+-]{1,64}$/);
+    if (s.prompt_version) re(s.prompt_version, REF);
+    re(s.prompt_sha256, HEX);
+    if (s.dataset) {
+      keys(s.dataset, ['sha256'], ['ref']);
+      re(s.dataset.sha256, HEX);
+    }
+    keys(s.test_set, ['version', 'cases'], ['selection', 'expected_version']);
+    re(s.test_set.version, REF);
+    count(s.test_set.cases);
+    keys(s.evaluator, ['version', 'parser'], ['judge_model', 'rubric_sha256']);
+    re(s.evaluator.version, REF);
+    re(s.evaluator.parser, REF);
+    if (s.evaluator.rubric_sha256) re(s.evaluator.rubric_sha256, HEX);
+    assert.ok(s.metrics.length <= 50);
+    for (const m of s.metrics) {
+      keys(m, ['name', 'value', 'passed'], ['category', 'threshold']);
+      re(m.name, /^[A-Za-z0-9 ._:/@+-]{1,64}$/);
+      re(m.value, DEC);
+      if (m.threshold) {
+        keys(m.threshold, ['value', 'direction']);
+        re(m.threshold.value, DEC);
+        assert.ok(['gte', 'lte'].includes(m.threshold.direction));
+      }
+    }
+    keys(s.cases, ['total', 'passed', 'failed', 'errored']);
+    Object.values(s.cases).forEach(count);
+    assert.equal(typeof s.passed, 'boolean');
+  }
+}
+
+test('yaml: the subset ai.yml uses', () => {
+  const doc = parseYaml(`# c
+version: 1
+a: "x # not a comment" # comment
+b: [one, "two, three", 4]
+c: { k: v, n: 0.5 }
+list:
+  - p/one.txt
+  - name: s
+    deep:
+      x: true
+nested:
+- item
+empty:
+`);
+  assert.deepEqual(doc, {
+    version: 1,
+    a: 'x # not a comment',
+    b: ['one', 'two, three', 4],
+    c: { k: 'v', n: 0.5 },
+    list: ['p/one.txt', { name: 's', deep: { x: true } }],
+    nested: ['item'],
+    empty: null,
+  });
+});
+
+test('yaml: refuses what it would read wrongly, naming the line', () => {
+  for (const [text, message] of [
+    ['a: 1\n\tb: 2', /line 2: indent with spaces/],
+    ['a: &x 1', /line 1: .*anchors/],
+    ['a: |\n  text', /line 1: block text/],
+    ['a: 1\na: 2', /line 2: "a" is listed twice/],
+    ['a: 1\n   b: 2', /line 2: unexpected indentation/],
+    ['a: [1, [2]]', /nested/],
+    ['a: "open', /not closed/],
+    ['a: 1\n---\nb: 2', /one document/],
+  ]) {
+    assert.throws(() => parseYaml(text), { message }, text);
+  }
+});
+
+test('config: the fixture loads; errors say what to fix', () => {
+  const cfg = config();
+  assert.equal(cfg.suites.length, 3);
+  assert.equal(cfg.suites[0].required, true);
+  assert.deepEqual(cfg.suites[0].metrics.pass_rate, { threshold: { value: 0.9, direction: 'gte' }, category: 'unsafe_compliance' });
+  assert.deepEqual(cfg.suites[1].prompts, ['prompts/support.txt']);
+  for (const [text, message] of [
+    ['suites: []', /version: set version: 1.*suites: list your eval suites/],
+    ['version: 1\nsuites:\n  - name: a', /suites\[0\].prompts: list the prompt files/],
+    ['version: 1\nprompts: [../x]\nsuites:\n  - name: a', /prompts\[0\]: "..\/x" must be relative/],
+    ['version: 1\nprompts: [/etc/passwd]\nsuites:\n  - name: a', /must be relative/],
+    ['version: 1\nprompts: [p]\nsuites:\n  - name: a\n    metrics:\n      x: { gte: 1, lte: 2 }', /metrics.x: set gte: or lte:, not both/],
+    ['version: 1\nprompts: [p]\nsuites:\n  - name: a\n    test_set: { selection: random }', /selection: use one of production_sample/],
+    ['version: 1\nprompts: [p]\nsuites:\n  - name: a\n    dataset: nope', /dataset: name one of the datasets/],
+    ['version: 1\nprompts: [p]\nsuites:\n  - name: a\n    model: { provider: OpenAI, id: x }', /model.provider: use letters/],
+    ['version: 1\nprompts: [p]\nsuites:\n  - name: a\n  - name: a', /"a" is used by two suites/],
+    ['version: 1\nprompts: [p]\npromts: [q]\nsuites:\n  - name: a', /promts: unknown key/],
+    ['version: 1\nprompts: [p]\nsuites:\n  - name: a\n    test_set: {}', /test_set.version: set the test set version/],
+    ['version: 1\na: b: c', /Fix .complyd\/ai.yml/],
+  ]) {
+    assert.throws(() => parseConfig(text), { code: 'config', message }, text);
+  }
+});
+
+test('hashing: one file is its own SHA-256; several are sha256sum lines sorted by path', () => {
+  const prompt = readFileSync(join(REPO, 'prompts', 'support.txt'));
+  assert.equal(hashFiles(REPO, ['prompts/support.txt'], 'x'), sha(prompt));
+  const rubric = readFileSync(join(REPO, 'evals', 'rubric.md'));
+  assert.equal(
+    hashFiles(REPO, ['prompts/support.txt', 'evals/rubric.md'], 'x'),
+    sha(`${sha(rubric)}  evals/rubric.md\n${sha(prompt)}  prompts/support.txt\n`),
+  );
+  assert.throws(() => hashFiles(REPO, ['nope.txt'], 'suites[0].prompts'), { code: 'config', message: /suites\[0\].prompts: couldn't read nope.txt/ });
+  const p = payloadOf('promptfoo');
+  assert.equal(p.suites[0].prompt_sha256, sha(prompt));
+  assert.equal(p.suites[0].dataset.sha256, sha(readFileSync(join(REPO, 'evals', 'data', 'refusals.jsonl'))));
+  assert.equal(p.suites[0].evaluator.rubric_sha256, sha(rubric));
+});
+
+test('decimal strings and provider ids', () => {
+  assert.equal(decimal(0.94), '0.94');
+  assert.equal(decimal(10), '10');
+  assert.equal(decimal(1 / 3), '0.333333333');
+  assert.equal(decimal(-0.0000000001), '0');
+  assert.equal(decimal(1e12), undefined);
+  assert.equal(decimal(NaN), undefined);
+  assert.deepEqual(providerModel('openai:chat:gpt-4o'), { provider: 'openai', id: 'gpt-4o' });
+  assert.deepEqual(providerModel('bedrock:meta.llama3-70b'), { provider: 'bedrock', id: 'meta.llama3-70b' });
+  for (const p of ['file://provider.py', 'https://api.example.com/v1?key=secret', 'python:grader.py', 'nocolon']) assert.equal(providerModel(p), undefined, p);
+});
+
+test('promptfoo: one suite per prompt × provider, pass rate and named scores', () => {
+  const p = payloadOf('promptfoo');
+  assertSchema(p);
+  assert.deepEqual(p.tool, { name: 'promptfoo', version: '0.112.3' });
+  assert.equal(p.ran_at, '2026-11-18T10:21:04.512Z');
+  assert.deepEqual(p.suites.map((s) => `${s.name} ${s.model.provider}/${s.model.id}`), ['safety-refusals openai/gpt-4o-mini', 'safety-refusals mistral/mistral-large-latest']);
+  const [a, b] = p.suites;
+  assert.deepEqual(a.cases, { total: 50, passed: 47, failed: 2, errored: 1 });
+  assert.equal(a.passed, false);
+  assert.deepEqual(a.metrics[0], { name: 'pass_rate', category: 'unsafe_compliance', value: '0.94', threshold: { value: '0.9', direction: 'gte' }, passed: true });
+  assert.deepEqual(a.metrics.slice(1).map((m) => [m.name, m.value]), [['refusal', '0.93'], ['tone -polite-', '0.88']]);
+  assert.equal(b.passed, true);
+  assert.deepEqual(a.test_set, { version: '4', cases: 50, selection: 'curated' });
+  assert.deepEqual(a.evaluator.parser, 'llm-rubric');
+});
+
+test('deepeval: metrics averaged over cases; Toxicity is lower-is-better; the judge from the file', () => {
+  const p = payloadOf('deepeval');
+  assertSchema(p);
+  const [s] = p.suites;
+  assert.equal(s.name, 'answer-quality');
+  assert.deepEqual(s.model, { provider: 'openai', id: 'gpt-4o-mini' });
+  assert.deepEqual(s.cases, { total: 3, passed: 2, failed: 1, errored: 0 });
+  const rel = s.metrics.find((m) => m.name === 'Answer Relevancy');
+  // Mean 0.71 meets 0.7, but one case failed it: the runner's verdict stands.
+  assert.deepEqual(rel, { name: 'Answer Relevancy', value: '0.71', threshold: { value: '0.7', direction: 'gte' }, passed: false });
+  assert.deepEqual(s.metrics.find((m) => m.name === 'Toxicity').threshold, { value: '0.5', direction: 'lte' });
+  assert.equal(s.evaluator.judge_model, 'gpt-4o');
+  assert.equal(s.evaluator.version, 'deepeval-unknown');
+  assert.equal(s.passed, false);
+});
+
+test('openai-evals: result counts and per-criteria pass rates', () => {
+  const p = payloadOf('openai-evals');
+  assertSchema(p);
+  const [s] = p.suites;
+  assert.equal(p.ran_at, '2026-11-18T10:00:00.000Z');
+  assert.deepEqual(s.model, { provider: 'openai', id: 'gpt-4o-mini' });
+  assert.deepEqual(s.cases, { total: 50, passed: 47, failed: 3, errored: 0 });
+  assert.deepEqual(s.metrics.map((m) => [m.name, m.value, m.passed]), [['pass_rate', '0.94', true], ['refuses-cross-account-6f1a2b', '0.94', false]]);
+  assert.throws(() => PARSERS['openai-evals']({ object: 'eval' }), { code: 'results' });
+});
+
+test('lm-eval: one suite per task, no case verdicts, samples as the test set size', () => {
+  const p = payloadOf('lm-eval');
+  assertSchema(p);
+  const [s] = p.suites;
+  assert.equal(p.tool.version, '0.4.8');
+  assert.deepEqual(s.model, { provider: 'hf', id: 'acme/support-7b', version: '2026-10-01' });
+  assert.deepEqual(s.cases, { total: 0, passed: 0, failed: 0, errored: 0 });
+  assert.equal(s.test_set.cases, 1000);
+  assert.deepEqual(s.metrics.map((m) => m.name), ['acc_norm', 'acc']);
+  assert.equal(s.passed, true);
+});
+
+test('generic: the documented shape; a decimal string value; matched by name', () => {
+  const p = payloadOf('generic', 'baseline');
+  assertSchema(p);
+  const [s] = p.suites;
+  assert.equal(s.role, 'baseline');
+  assert.deepEqual(s.model, { provider: 'acme', id: 'support-large', version: '3' });
+  assert.deepEqual(s.metrics[1], { name: 'latency_p95_ms', value: '812.5', threshold: { value: '1500', direction: 'lte' }, passed: true });
+});
+
+test('minimisation: no prompt, output, case, rubric or dataset text in any envelope', () => {
+  const secret = [
+    readFileSync(join(REPO, 'prompts', 'support.txt'), 'utf8'),
+    readFileSync(join(REPO, 'evals', 'rubric.md'), 'utf8'),
+    readFileSync(join(REPO, 'evals', 'data', 'refusals.jsonl'), 'utf8'),
+  ];
+  for (const format of FORMATS) {
+    const text = JSON.stringify(payloadOf(format));
+    assert.ok(readFileSync(join(AI, `${format}.json`), 'utf8').includes('CANARY'), `${format} fixture has canaries`);
+    assert.doesNotMatch(text, /CANARY/, format);
+    for (const s of secret) assert.ok(!text.includes(s.trim().slice(0, 30)), format);
+    assert.doesNotMatch(text, /invoices|ships tomorrow|bob@example/i, format);
+  }
+});
+
+test("minimisation: an unlabelled promptfoo prompt's text is not echoed in the error", () => {
+  const doc = fixture('promptfoo');
+  doc.results.prompts[0].label = 'You are CANARY-PROMPT-SYSTEM, answer {{question}}';
+  const cfg = parseConfig('version: 1\nprompts: [prompts/support.txt]\nsuites:\n  - name: a\n    test_set: { version: "1" }\n  - name: b\n    test_set: { version: "1" }');
+  assert.throws(
+    () => buildPayload(PARSERS.promptfoo(doc), cfg, { format: 'promptfoo', role: 'candidate', commit: SHA, runId: 'x', ranAt: 'x', root: REPO }),
+    (e) => e.code === 'config' && /#1 \(unnamed\)/.test(e.message) && !/CANARY/.test(e.message),
+  );
+});
+
+test('a thresholded metric missing from the results fails the suite, with a warning', () => {
+  const cfg = parseConfig('version: 1\nprompts: [prompts/support.txt]\nsuites:\n  - name: a\n    test_set: { version: "1" }\n    metrics:\n      jailbreak_rate: { lte: 0.01 }');
+  const warnings = [];
+  const p = buildPayload(PARSERS.generic(fixture('generic')), cfg, { format: 'generic', role: 'candidate', commit: SHA, runId: 'x', ranAt: '2026-11-19T08:00:00.000Z', root: REPO, warn: (w) => warnings.push(w) });
+  assert.equal(p.suites[0].passed, false);
+  assert.match(warnings[0], /jailbreak_rate .* isn't in the results/);
+});
+
+test('envelope ids: under the route limit for every CI, distinct for baseline and candidate', () => {
+  const circle = `circleci-${'f'.repeat(8)}-ffff-4fff-8fff-${'f'.repeat(12)}`;
+  for (const runKey of ['987654321-2', 'gitlab-12345678901234567890', circle, `ci-${'a'.repeat(32)}`]) {
+    assert.match(aiEnvelopeId(runKey, 'candidate', 'promptfoo', 'r.json'), /^[A-Za-z0-9_-]{16,64}$/);
+  }
+  assert.notEqual(aiEnvelopeId('1-1', 'candidate', 'promptfoo', 'r.json'), aiEnvelopeId('1-1', 'baseline', 'promptfoo', 'r.json'));
+});
+
+/** Runs the CLI in-process with a stub Complyd; resolves { code, out, err, posts }. */
+async function cli(argv, env = {}) {
+  const out = [];
+  const err = [];
+  const posts = [];
+  const fetchImpl = async (url, init) => {
+    posts.push({ url: new URL(url), init });
+    return new Response(JSON.stringify({ observation: 'obs_1' }), { status: 202 });
+  };
+  const code = await main(argv, env, { fetchImpl, sleep: async () => {}, now: () => new Date('2026-11-19T08:00:00Z'), out: (l) => out.push(l), err: (l) => err.push(l) });
+  return { code, out, err, posts };
+}
+
+test('CLI scan ai_eval --dry-run: prints the envelope, sends nothing, needs no sign-in', async () => {
+  const r = await cli(['scan', 'ai_eval', '--format', 'promptfoo', '--input', join(AI, 'promptfoo.json'), '--workspace', REPO, '--commit', SHA, '--dry-run']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.equal(r.posts.length, 0);
+  const env = JSON.parse(r.out.join('\n'));
+  assert.equal(env.collector, 'complyd_ai_release');
+  assert.equal(env.schema, 'ai_eval');
+  assert.equal(env.schema_version, 1);
+  assertSchema(env.payload);
+});
+
+test('CLI scan ai_eval with an ingest key: posts ai_eval v1 as complyd_ai_release', async () => {
+  const r = await cli(['scan', 'ai_eval', '--format', 'openai-evals', '--input', join(AI, 'openai-evals.json'), '--workspace', REPO, '--repo', 'jenkins:acme/app', '--commit', SHA, '--run-id', 'b42', '--role', 'baseline'], { COMPLYD_INGEST_KEY: KEY });
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.equal(r.posts.length, 1);
+  const body = JSON.parse(r.posts[0].init.body);
+  assert.equal(body.collector, 'complyd_ai_release');
+  assert.equal(body.subject.id, 'jenkins:acme/app');
+  assert.equal(body.payload.suites[0].role, 'baseline');
+  assert.match(body.id, /^ci-[0-9a-f]{32}-ai_eval-[0-9a-f]{8}$/);
+  assert.match(r.out[0], /^Sent 1 eval suites/);
+  assert.equal(r.out[1], 'Stored as obs_1.');
+});
+
+test('CLI scan ai_eval: usage errors', async () => {
+  for (const [argv, message] of [
+    [['scan', 'ai_eval', '--input', 'x'], /--format to the eval tool/],
+    [['scan', 'ai_eval', '--input', 'x', '--format', 'sarif'], /--format to the eval tool/],
+    [['scan', 'ai_eval', '--input', 'x', '--input', 'y', '--format', 'generic'], /one --input/],
+    [['scan', 'ai_eval', '--input', 'x', '--format', 'generic', '--role', 'prod'], /--role/],
+    [['scan', 'sast', '--input', 'x', '--dry-run'], /--dry-run is for ai_eval/],
+    [['deploy', 'record', '--dry-run'], /--environment/],
+    [['deploy', 'record', '--environment', 'production'], /coming soon/],
+  ]) {
+    const r = await cli(argv);
+    assert.equal(r.code, 2, argv.join(' '));
+    assert.match(r.err[0], message, argv.join(' '));
+  }
+  const r = await cli(['scan', 'ai_eval', '--format', 'generic', '--input', join(AI, 'generic.json'), '--workspace', AI, '--commit', SHA, '--dry-run']);
+  assert.equal(r.code, 1);
+  assert.match(r.err[0], /Couldn't read .complyd\/ai.yml/);
+});
+
+/** A git repository with the fixture repo as its first commit. */
+function gitRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-release-'));
+  cpSync(REPO, dir, { recursive: true });
+  const git = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', ...a], { cwd: dir, stdio: 'pipe' });
+  git('init', '-q');
+  git('add', '-A');
+  git('commit', '-qm', 'one');
+  return { dir, git };
+}
+
+test('deploy record: kinds and before/after hashes against the previous commit', async () => {
+  const { dir, git } = gitRepo();
+  assert.throws(() => deployRecord({ environment: 'production', root: dir }), { code: 'git', message: /fetch-depth: 2/ });
+  // A safety-section edit and a temperature change.
+  const prompt = join(dir, 'prompts', 'support.txt');
+  writeFileSync(prompt, readFileSync(prompt, 'utf8').replace('Never reveal', 'Do not reveal'));
+  writeFileSync(join(dir, 'config', 'llm.yaml'), 'model: gpt-4o-mini\nmodel_version: 2024-07-18\ntemperature: 0.7\n');
+  git('commit', '-qam', 'two');
+  const rec = deployRecord({ environment: 'production', root: dir, now: () => new Date('2026-11-19T08:00:00Z') });
+  assert.equal(rec.system, 'support-assistant');
+  assert.equal(rec.commit.length, 40);
+  assert.deepEqual(rec.changes.map((c) => c.kind), ['model_params', 'prompt', 'safety_prompt']);
+  for (const c of rec.changes) {
+    assert.match(c.before_sha256, /^[0-9a-f]{64}$/);
+    assert.match(c.after_sha256, /^[0-9a-f]{64}$/);
+    assert.notEqual(c.before_sha256, c.after_sha256);
+  }
+  assert.doesNotMatch(JSON.stringify(rec), /CANARY|reveal|temperature/);
+
+  // A model change, a new dataset file and a threshold change.
+  writeFileSync(join(dir, 'config', 'llm.yaml'), 'model: gpt-4o\nmodel_version: 2024-08-06\ntemperature: 0.7\n');
+  writeFileSync(join(dir, 'evals', 'data', 'refusals.jsonl'), '{"input":"CANARY-2"}\n');
+  const yml = join(dir, '.complyd', 'ai.yml');
+  writeFileSync(yml, readFileSync(yml, 'utf8').replace('gte: 0.9,', 'gte: 0.95,'));
+  git('commit', '-qam', 'three');
+  const r = await cli(['deploy', 'record', '--environment', 'staging', '--system', 'support bot', '--workspace', dir, '--dry-run']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  const env = JSON.parse(r.out.join('\n'));
+  assert.equal(env.schema, 'ai_release');
+  assert.equal(env.collector, 'complyd_ai_release');
+  assert.equal(env.payload.system, 'support bot');
+  assert.deepEqual(env.payload.changes.map((c) => c.kind), ['model', 'eval_suite', 'dataset']);
+
+  // No change at all: an empty list.
+  git('commit', '-q', '--allow-empty', '-m', 'four');
+  assert.deepEqual(deployRecord({ environment: 'production', root: dir }).changes, []);
+});
+
+test('deploy record: a kind added since the previous commit has a null before', () => {
+  const { dir, git } = gitRepo();
+  const yml = join(dir, '.complyd', 'ai.yml');
+  mkdirSync(join(dir, 'rag'));
+  writeFileSync(join(dir, 'rag', 'index.yaml'), 'top_k: 5\n');
+  writeFileSync(yml, readFileSync(yml, 'utf8').replace('tools: [config/tools.json]', 'tools: [config/tools.json]\nretrieval: [rag/index.yaml]'));
+  git('add', '-A');
+  git('commit', '-qm', 'two');
+  const rec = deployRecord({ environment: 'production', root: dir });
+  assert.deepEqual(rec.changes, [{ kind: 'retrieval', before_sha256: null, after_sha256: rec.changes[0].after_sha256 }]);
+});
+
+test('safety sections and model keys', () => {
+  assert.equal(sections('a\n<s>\nrule 1\n</s>\nb\n<s>\nrule 2\n</s>', { start: '<s>', end: '</s>' }), 'rule 1\n\u0000\nrule 2');
+  assert.equal(sections('no markers', { start: '<s>', end: '</s>' }), null);
+  assert.deepEqual(splitModel('model: x\n"model_version": "2"\ntemperature = 1', ['model', 'model_version']), { model: 'model: x\n"model_version": "2"', params: 'temperature = 1' });
+});
+
+test('action: scan ai_eval with format, input and role', async () => {
+  const posts = [];
+  const fetchImpl = async (url, init = {}) => {
+    const u = new URL(url);
+    if (u.host === 'token.example.test') return new Response(JSON.stringify({ value: 'gh-jwt' }), { status: 200 });
+    posts.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ observation: 'obs_9' }), { status: 202 });
+  };
+  const env = {
+    INPUT_TRUST: TRUST,
+    INPUT_AUDIENCE: `https://api.complyd.ai/observations/${TRUST}`,
+    INPUT_SCAN: 'ai_eval',
+    INPUT_FORMAT: 'lm-eval',
+    INPUT_INPUT: join(AI, 'lm-eval.json'),
+    INPUT_ROLE: 'baseline',
+    GITHUB_WORKSPACE: REPO,
+    GITHUB_REPOSITORY_ID: '123456789',
+    GITHUB_SHA: 'b'.repeat(40),
+    GITHUB_RUN_ID: '987654321',
+    GITHUB_RUN_ATTEMPT: '2',
+    ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.example.test/req',
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'runner-secret',
+  };
+  const r = await run(env, { fetchImpl, sleep: async () => {} });
+  assert.equal(r.answer.observation, 'obs_9');
+  assert.equal(posts[0].collector, 'complyd_ai_release');
+  assert.equal(posts[0].subject.id, 'github:123456789');
+  assert.equal(posts[0].payload.run_id, '987654321-2');
+  assert.equal(posts[0].payload.suites[0].role, 'baseline');
+  await assert.rejects(run({ ...env, INPUT_FORMAT: 'auto' }, { fetchImpl }), /`format` to the eval tool/);
+  await assert.rejects(run({ ...env, INPUT_ROLE: 'prod' }, { fetchImpl }), /`role`/);
+});

@@ -3,18 +3,34 @@
 
 const { parseArgs } = require('util');
 const { createHash, randomUUID } = require('crypto');
+const { execFileSync } = require('child_process');
 const { ActionError } = require('./reduce');
-const { oidcToken, allowedApiUrl, audienceAllowed } = require('./post');
-const { scan, summary, droppedLine, errorLine, escape } = require('./scan');
+const { oidcToken, allowedApiUrl, audienceAllowed, envelope } = require('./post');
+const { scan, scanAi, aiSummary, summary, droppedLine, errorLine, escape } = require('./scan');
+const { FORMATS, ROLES } = require('./ai-eval');
+const { deployRecord } = require('./ai-release');
+const { DEFAULT_CONFIG } = require('./ai-config');
 const { version } = require('../package.json');
 
 const USAGE = `Usage: complyd-pipeline scan dependencies|sast --input <file> [options]
+       complyd-pipeline scan ai_eval --format <tool> --input <file> [options]
+       complyd-pipeline deploy record --environment <env> --dry-run [--system <name>]
 
-Sends a scanner's results to Complyd (dependency_scan v1 or sast_scan v1).
+Sends a scanner's results to Complyd (dependency_scan v1 or sast_scan v1), or
+an AI eval run's results (ai_eval v1: hashes, counts and metric values only).
 
   --input <path>        SARIF 2.1.0 or OSV-Scanner JSON (sast: SARIF; repeat it
                         or name a directory of .sarif files to merge them)
-  --format <f>          auto (default), sarif or osv
+  --format <f>          auto (default), sarif or osv; for ai_eval: promptfoo,
+                        deepeval, openai-evals, lm-eval or generic
+  --role <r>            ai_eval: candidate (default) or baseline
+  --suite-config <path> ai_eval, deploy record: the AI config, relative to the
+                        workspace. Default: .complyd/ai.yml
+  --dry-run             ai_eval, deploy record: print the envelope, send nothing
+                        (deploy record: required; sending it is coming soon)
+  --environment <env>   deploy record: where this deploy goes, e.g. production
+  --system <name>       deploy record: the AI system's name (default: system: in
+                        the AI config)
   --repo <subject>      Complyd's repository id. Default: github:<repository id>
                         on GitHub, gitlab-oidc:<host>/<project id> on GitLab,
                         bitbucket-oidc:<repository uuid> on Bitbucket; required
@@ -54,6 +70,11 @@ const OPTIONS = {
   'id-token-var': { type: 'string' },
   'api-url': { type: 'string' },
   'insecure-local-api': { type: 'boolean' },
+  role: { type: 'string', default: 'candidate' },
+  'suite-config': { type: 'string', default: DEFAULT_CONFIG },
+  'dry-run': { type: 'boolean' },
+  environment: { type: 'string' },
+  system: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean' },
 };
@@ -61,7 +82,7 @@ const OPTIONS = {
 const DEFAULT_API = 'https://api.complyd.ai';
 const usage = (message) => new ActionError('usage', message);
 /** The scan kinds (`dependency` is the 1.0 spelling, kept). */
-const KINDS = { dependencies: 'dependency', dependency: 'dependency', sast: 'sast' };
+const KINDS = { dependencies: 'dependency', dependency: 'dependency', sast: 'sast', ai_eval: 'ai_eval' };
 const CIRCLECI_SUBJECT = /^circleci-oidc:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 const UUID = /^\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?$/i;
 const first = (...vs) => vs.find((v) => typeof v === 'string' && v.trim() !== '')?.trim();
@@ -77,11 +98,24 @@ function parse(argv) {
   }
   const { values, positionals } = parsed;
   if (values.help || values.version) return { values, kind: null };
+  if (positionals.length === 2 && positionals[0] === 'deploy' && positionals[1] === 'record') {
+    if (!values.environment) throw usage('Set --environment to where this deploy goes, e.g. production.');
+    // shortcut: Complyd doesn't take deploy records yet; send them once its ai_release schema ships.
+    if (!values['dry-run']) throw usage('Sending deploy records to Complyd is coming soon: add --dry-run to print the record.');
+    return { values, kind: 'deploy' };
+  }
   if (positionals.length !== 2 || positionals[0] !== 'scan' || !Object.hasOwn(KINDS, positionals[1])) {
-    throw usage('Name the scan: complyd-pipeline scan dependencies|sast …');
+    throw usage('Name the scan: complyd-pipeline scan dependencies|sast|ai_eval … (or deploy record …)');
   }
   if (!values.input?.length) throw usage("Set --input to the scanner's output file.");
-  if (!['auto', 'sarif', 'osv'].includes(values.format)) throw usage('Set --format to auto, sarif or osv.');
+  if (KINDS[positionals[1]] === 'ai_eval') {
+    if (!FORMATS.includes(values.format)) throw usage(`Set --format to the eval tool: ${FORMATS.join(', ')}.`);
+    if (values.input.length > 1) throw usage('ai_eval takes one --input file per run of the command.');
+    if (!ROLES.includes(values.role)) throw usage('Set --role to candidate (default) or baseline.');
+  } else {
+    if (!['auto', 'sarif', 'osv'].includes(values.format)) throw usage('Set --format to auto, sarif or osv.');
+    if (values['dry-run']) throw usage('--dry-run is for ai_eval and deploy record.');
+  }
   return { values, kind: KINDS[positionals[1]] };
 }
 
@@ -171,6 +205,48 @@ function authFrom(values, env, fetchImpl, sleep) {
   };
 }
 
+const commitFrom = (values, env) =>
+  first(
+    values.commit,
+    env.GITHUB_SHA,
+    env.CI_COMMIT_SHA,
+    env.CIRCLE_SHA1,
+    env.BITBUCKET_COMMIT,
+    env.GIT_COMMIT,
+    env.CODEBUILD_RESOLVED_SOURCE_VERSION,
+    env.BUILD_SOURCEVERSION,
+  );
+
+/** The checkout's HEAD, for a run outside CI (a local dry run). */
+function gitHead(dir) {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * What `scanAi` needs. A dry run without any sign-in (on a laptop) needs no
+ * repository id or CI: it only prints the envelope.
+ */
+function aiOptions(values, env, deps) {
+  const signedIn = values.trust || values['id-token-var'] || first(env.COMPLYD_INGEST_KEY);
+  const o =
+    values['dry-run'] && !signedIn
+      ? { subject: first(values.repo) ?? 'dry-run', runKey: `ci-${randomUUID().replace(/-/g, '')}`, commit: commitFrom(values, env)?.toLowerCase(), workspace: first(values.workspace) ?? process.cwd() }
+      : options('ai_eval', values, env, deps);
+  return {
+    ...o,
+    commit: o.commit ?? gitHead(o.workspace),
+    input: values.input[0],
+    format: values.format,
+    role: values.role,
+    configPath: values['suite-config'],
+    dryRun: values['dry-run'] === true,
+  };
+}
+
 /** Everything `scan` needs, from the arguments and the CI's environment; throws before any request. */
 function options(kind, values, env, { fetchImpl = fetch, sleep } = {}) {
   const auth = authFrom(values, env, fetchImpl, sleep);
@@ -198,16 +274,7 @@ function options(kind, values, env, { fetchImpl = fetch, sleep } = {}) {
   }
   const runVar = { github: 'GITHUB_RUN_ID', gitlab: 'CI_JOB_ID', circleci: 'CIRCLE_WORKFLOW_JOB_ID', bitbucket: 'BITBUCKET_STEP_UUID' };
   if (!auth.runKey) throw usage(`${runVar[auth.source]} is missing: run this in the CI job.`);
-  const commit = first(
-    values.commit,
-    env.GITHUB_SHA,
-    env.CI_COMMIT_SHA,
-    env.CIRCLE_SHA1,
-    env.BITBUCKET_COMMIT,
-    env.GIT_COMMIT,
-    env.CODEBUILD_RESOLVED_SOURCE_VERSION,
-    env.BUILD_SOURCEVERSION,
-  );
+  const commit = commitFrom(values, env);
   let apiUrl;
   try {
     apiUrl = new URL(first(values['api-url']) ?? (values.audience ? new URL(values.audience).origin : DEFAULT_API));
@@ -245,6 +312,22 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
     const { values, kind } = parse(argv);
     if (values.help || values.version) {
       print(values.help ? USAGE : version);
+      return 0;
+    }
+    if (kind === 'deploy') {
+      const root = first(values.workspace) ?? process.cwd();
+      const now = deps.now ?? (() => new Date());
+      const payload = deployRecord({ environment: values.environment, system: values.system, root, configPath: values['suite-config'], now, warn: (w) => err(`warning: ${w}`) });
+      const id = `ci-${randomUUID().replace(/-/g, '')}-ai_release`;
+      print(JSON.stringify(envelope(payload, { id, subject: first(values.repo) ?? 'dry-run', observedAt: payload.recorded_at, schema: 'ai_release', collector: 'complyd_ai_release' }), null, 2));
+      return 0;
+    }
+    if (kind === 'ai_eval') {
+      const r = await scanAi(aiOptions(values, env, deps), deps);
+      for (const w of r.warnings) err(`warning: ${w}`);
+      // Every string in it matched the schema's patterns: no line can start a workflow command.
+      if (!r.answer) print(JSON.stringify(r.envelope, null, 2));
+      else for (const line of aiSummary(r)) out(line);
       return 0;
     }
     const { answer, payload, dropped } = await scan(options(kind, values, env, deps), deps);

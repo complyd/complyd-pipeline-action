@@ -273,11 +273,11 @@ const BITBUCKET = {
   BITBUCKET_STEP_OIDC_TOKEN: GITLAB.COMPLYD_ID_TOKEN,
 };
 
-test('subcommands: scan dependencies|dependency|sast; anything else is a usage error', () => {
+test('subcommands: scan dependencies|dependency|sast|ai_eval, deploy record; anything else is a usage error', () => {
   assert.equal(parse(['scan', 'dependencies', '--input', 'x']).kind, 'dependency');
   assert.equal(parse(['scan', 'dependency', '--input', 'x']).kind, 'dependency');
   assert.equal(parse(['--input', 'x', 'scan', 'sast']).kind, 'sast');
-  for (const argv of [['dependencies', '--input', 'x'], ['sast', '--input', 'x'], ['scan', '--input', 'x'], ['deploy', 'record', '--input', 'x'], ['scan', 'secrets', '--input', 'x']]) {
+  for (const argv of [['dependencies', '--input', 'x'], ['sast', '--input', 'x'], ['scan', '--input', 'x'], ['deploy', 'list', '--input', 'x'], ['scan', 'secrets', '--input', 'x']]) {
     assert.throws(() => parse(argv), { code: 'usage', message: /complyd-pipeline scan dependencies\|sast/ }, argv.join(' '));
   }
 });

@@ -1,6 +1,6 @@
 # Complyd pipeline
 
-Sends your pipeline's dependency scan or SAST scan from GitHub Actions to [Complyd](https://complyd.ai),
+Sends your pipeline's dependency scan, SAST scan or AI eval results from GitHub Actions to [Complyd](https://complyd.ai),
 signed in with the workflow's own OIDC token: no secret to store. The same
 code runs as a command line tool, `complyd-pipeline`, for GitLab CI,
 CircleCI and Bitbucket Pipelines (signed in with the job's own ID token) and
@@ -16,7 +16,9 @@ The scan holds no file paths, code, author, committer or actor. The sign-in
 token sent with it is your CI's own and does name the repository, branch,
 workflow and the user who started the run (on GitLab also their e-mail
 address): see [What Complyd receives](#what-complyd-receives). A SAST scan
-(`scan: sast`) sends even less: see [SAST scans](#sast-scans).
+(`scan: sast`) sends even less: see [SAST scans](#sast-scans). An AI eval
+run (`scan: ai_eval`) sends hashes, counts and metric values, never prompts or
+outputs: see [AI release](#ai-release).
 
 ## Set up
 
@@ -452,15 +454,204 @@ The commit is read from `BUILD_SOURCEVERSION`. Limit who can run the
 pipeline with the secret (branch policies, pipeline permissions): anyone who
 can read the variable can push as the key.
 
+## AI release
+
+With `scan: ai_eval` (the command: `complyd-pipeline scan ai_eval`) the
+action sends the results of an AI eval run, so Complyd can show which prompt,
+model, test set and evaluator a release was checked with, and whether its
+required suites passed. It reads the eval tool's results file and
+`.complyd/ai.yml` in your repository:
+
+| `format` | Tool | File to point `input` at |
+|---|---|---|
+| `promptfoo` | promptfoo | `promptfoo eval -o results.json` (one suite per prompt × provider) |
+| `deepeval` | DeepEval | `.deepeval/.latest_test_run.json` after `deepeval test run` |
+| `openai-evals` | OpenAI Evals API | the run object, `GET /v1/evals/{eval_id}/runs/{run_id}` (or a list of runs) |
+| `lm-eval` | lm-evaluation-harness | the `results_*.json` under `--output_path` (one suite per task) |
+| `generic` | anything else | Complyd's generic shape, below |
+
+**Data minimisation.** Complyd never receives prompts, model outputs, test
+cases or dataset contents. Per suite it receives only: the suite, metric and
+category names, metric values and thresholds, case counts, the model's
+provider and id, the test set and evaluator versions, the judge model's id,
+and SHA-256 hashes of the prompt, dataset and rubric files (computed in your
+CI; anyone holding the file can check a hash, nobody can read the file back
+from it). The readers keep numbers and ids only, and the tests check that no
+prompt, output or case text from the fixtures reaches what is sent. Run with
+`--dry-run` to see exactly what would be sent.
+
+The tool's own suite labels (a promptfoo prompt label can be the prompt's
+text) are used only to find the suite in `.complyd/ai.yml` and are never
+sent: the suite is sent under its `name:` from the config.
+
+### `.complyd/ai.yml`
+
+```yaml
+version: 1
+system: support-assistant            # optional: the AI system's name
+model:                               # files that pick the model
+  files: [config/llm.yaml]
+  keys: [model, model_version]       # these lines are the model; the rest are its parameters
+prompts:                             # prompt files (hashed; default for every suite)
+  - prompts/support.txt
+safety:
+  files: [prompts/guardrails.txt]    # whole files that are safety instructions
+  markers: { start: "<!-- safety:start -->", end: "<!-- safety:end -->" }  # safety sections inside prompt files
+datasets:
+  refusals:
+    path: evals/data/refusals.jsonl  # hashed, never sent
+    ref: datasets/refusals@3         # optional label
+retrieval: [config/retrieval.yaml]   # optional: RAG settings
+tools: [config/tools.json]           # optional: tool / function definitions
+product_config: [config/features.yaml]
+eval_method: [evals/grader.py]       # optional: graders, scoring code
+suites:
+  - name: safety-refusals            # the name Complyd shows
+    match: support-v2                # the suite's name in the tool's results (default: name)
+    required: true                   # a release must pass it
+    prompts: [prompts/support.txt]   # default: the top-level prompts
+    prompt_version: v12
+    dataset: refusals
+    model: { provider: openai, id: gpt-4o-mini, version: "2024-07-18" }  # when the results don't say
+    test_set: { version: "4", selection: curated }  # selection: production_sample, curated, synthetic, regression or mixed
+    evaluator:
+      version: "3"                   # default: the tool's version
+      parser: llm-rubric             # default: the format
+      judge_model: openai/gpt-4o
+      rubric: evals/rubric.md        # hashed, never sent
+    metrics:
+      pass_rate: { gte: 0.95, category: unsafe_compliance }
+      latency_p95_ms: { lte: 1500 }
+    files: [promptfooconfig.yaml]    # the suite's own eval config
+```
+
+Paths are relative to the repository root. A mistake fails the step with
+each problem and what to change, e.g. `suites[0].test_set.version: set the
+test set version (or a dataset:, whose hash then names it)`. Each suite needs
+prompt files and a test set version (or a dataset). The file is read by a
+strict YAML reader: anchors, tags and `|` / `>` text blocks are refused.
+
+How each suite is filled in:
+
+- **Metrics.** promptfoo: `pass_rate` and each named score's average;
+  DeepEval: each metric's average score with its threshold (Bias, Toxicity
+  and Hallucination are lower-is-better); OpenAI: `pass_rate` and each
+  testing criterion's pass rate; lm-eval: each metric (`acc`, `acc_norm`,
+  `exact_match:<filter>`, …), without its stderr. A threshold under
+  `metrics:` replaces the tool's; a thresholded metric missing from the
+  results fails the suite.
+- **Cases.** The tool's pass, fail and error counts. lm-eval has no per-case
+  verdicts: its cases are 0 and its sample count is the test set size, so
+  only a threshold can pass an lm-eval suite.
+- **Role.** `role: baseline` for the version in production re-run as the
+  comparison, `candidate` (default) for the change being released. Send each
+  as its own step.
+
+### GitHub Actions
+
+Tick **Complyd AI release** when you create the trust (Settings › Workload
+trusts), then:
+
+```yaml
+      - run: npx promptfoo@0.112.3 eval -c promptfooconfig.yaml -o promptfoo-results.json || true
+      - name: Send the eval run to Complyd
+        uses: complyd/complyd-pipeline-action@<commit SHA> # vX.Y.Z
+        with:
+          trust: trw_00000000-0000-4000-8000-000000000000
+          audience: https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
+          scan: ai_eval
+          format: promptfoo
+          input: promptfoo-results.json
+          role: candidate
+```
+
+The trust's rules apply as for scans (its default branch and allowed events).
+
+### GitLab CI
+
+```yaml
+ai-eval:
+  image: node:22-alpine
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  id_tokens:
+    COMPLYD_ID_TOKEN:
+      aud: https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
+  script:
+    - npx promptfoo@0.112.3 eval -c promptfooconfig.yaml -o promptfoo-results.json || true
+    - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
+    - >
+      complyd-pipeline scan ai_eval --format promptfoo --input promptfoo-results.json
+      --trust trw_00000000-0000-4000-8000-000000000000
+      --id-token-var COMPLYD_ID_TOKEN
+```
+
+### Any other CI (ingest key)
+
+Create an ingest key for **Complyd AI release** (one per repository, see
+Sign-in above):
+
+```sh
+lm_eval --model hf --model_args pretrained=acme/support-7b --tasks hellaswag --output_path out/
+COMPLYD_INGEST_KEY=… complyd-pipeline scan ai_eval --format lm-eval \
+  --input out/acme__support-7b/results_*.json --repo jenkins:acme/support-bot
+```
+
+Locally, `complyd-pipeline scan ai_eval --format … --input … --dry-run`
+prints the envelope without any sign-in.
+
+### Generic format
+
+For any other harness, write this JSON (`value` a number or a decimal
+string; `threshold`, `passed` and `model` optional):
+
+```json
+{
+  "tool": { "name": "acme-harness", "version": "2.1.0" },
+  "ran_at": "2026-11-18T09:00:00Z",
+  "suites": [
+    {
+      "name": "safety-refusals",
+      "model": { "provider": "acme", "id": "support-large", "version": "3" },
+      "metrics": [
+        { "name": "refusal_rate", "value": 0.97, "threshold": { "value": 0.95, "direction": "gte" }, "passed": true }
+      ],
+      "cases": { "total": 200, "passed": 194, "failed": 6, "errored": 0 },
+      "passed": true
+    }
+  ]
+}
+```
+
+Other keys are ignored and never sent.
+
+### Deploy records (coming soon)
+
+```sh
+complyd-pipeline deploy record --environment production [--system support-assistant] --dry-run
+```
+
+compares the files `.complyd/ai.yml` names at the deployed commit and its
+parent and prints which kinds changed, each with a before and after
+SHA-256: `model`, `model_params`, `prompt`, `safety_prompt`, `eval_suite`
+(suite files and settings), `dataset`, `retrieval`, `tools`,
+`product_config` and `eval_method` (evaluator settings, rubrics, graders).
+No file content or path is in the record. It needs the parent commit
+(`actions/checkout` `fetch-depth: 2`, GitLab `GIT_DEPTH: 2`). **Sending it
+to Complyd is coming soon**: today it runs only with `--dry-run`.
+
 ## Inputs
 
 | Input | Required | Meaning |
 |---|---|---|
 | `trust` | yes | The trust id from Complyd, `trw_…` |
 | `audience` | yes | The trust's audience from Complyd |
-| `results` | yes | Path of the scanner's output file. For `scan: sast`: a file, a directory of `*.sarif` files, or one path per line, merged into one scan |
-| `scan` | no | `dependencies` (default; `dependency` also works) or `sast` (SARIF only) |
-| `format` | no | `auto` (default), `sarif` or `osv` |
+| `results` | yes* | Path of the scanner's output file. For `scan: sast`: a file, a directory of `*.sarif` files, or one path per line, merged into one scan |
+| `input` | yes* | Same as `results` (*set one of them) |
+| `scan` | no | `dependencies` (default; `dependency` also works), `sast` (SARIF only) or `ai_eval` |
+| `format` | no | `auto` (default), `sarif` or `osv`; for `ai_eval`: `promptfoo`, `deepeval`, `openai-evals`, `lm-eval` or `generic` |
+| `role` | no | `ai_eval` only: `candidate` (default) or `baseline` |
+| `suite-config` | no | `ai_eval` only: the AI config, default `.complyd/ai.yml` |
 | `api-url` | no | For testing only: Complyd's address, defaults to the audience's origin and must be on the same host |
 
 The sign-in token goes only over https (port 443) to `api.complyd.ai` or
@@ -485,7 +676,10 @@ first-seen date when an alias is published later or you switch scanner.
 
 Every scan is sent as collector `complyd_ci_scan` with `collector_version`
 set to this package's version: Complyd's id for this tool, unchanged by the
-rename to Complyd pipeline.
+rename to Complyd pipeline. An AI eval run is sent as collector
+`complyd_ai_release` (Complyd lists it as **Complyd AI release**), schema
+`ai_eval` v1, one observation per results file and role
+(`<run id>-<run attempt>-ai_eval-<hash>`).
 
 For a SAST scan, one observation per run (`<run id>-<run attempt>-sast_scan`):
 the same envelope, with each finding reduced to its rule id, severity and

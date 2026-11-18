@@ -147,7 +147,7 @@ test('scan: sast results errors: an empty directory, too many files, an unreadab
 
 test('refuses an unknown scan kind before asking for a token', async () => {
   const { calls, fetchImpl } = stub();
-  await assert.rejects(run(env({ INPUT_SCAN: 'secrets' }), { fetchImpl }), /dependencies \(default\) or sast/);
+  await assert.rejects(run(env({ INPUT_SCAN: 'secrets' }), { fetchImpl }), /dependencies \(default\), sast or ai_eval/);
   assert.equal(calls.length, 0);
 });
 
@@ -329,7 +329,7 @@ test('scan: empty, dependency (1.0) and dependencies all send a dependency_scan;
   // Inherited object keys are not scan kinds.
   for (const kind of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
     const s = stub();
-    await assert.rejects(run(env({ INPUT_SCAN: kind }), s), /dependencies \(default\) or sast/, kind);
+    await assert.rejects(run(env({ INPUT_SCAN: kind }), s), /dependencies \(default\), sast or ai_eval/, kind);
     assert.equal(s.calls.length, 0);
   }
 });
