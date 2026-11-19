@@ -100,11 +100,6 @@ function digest(entries) {
 const FACTS = { model_params: 'params_sha256', prompt: 'prompt_sha256', safety_prompt: 'safety_sha256', retrieval: 'retrieval_sha256', product_config: 'config_sha256', eval_method: 'evaluator_sha256' };
 /** Complyd's ai_release schema caps. */
 const MAX_DATASETS = 20;
-/**
- * The model of a record no system owns (a config-only change): Complyd
- * ignores it there, but the schema requires one.
- */
-const NO_MODEL = { provider: 'none', id: 'none' };
 
 /**
  * The deploy record (Complyd's ai_release v2): what changed in the configured
@@ -151,7 +146,7 @@ function deployRecord({ environment, system, root = process.cwd(), configPath = 
   const recordOf = (s, hint) => {
     const changes = [];
     const facts = {};
-    let model = NO_MODEL;
+    let model;
     let datasets = [];
     if (s) {
       const was = before && (before.systems.find((b) => b.system === s.system) ?? (before.systems.length === 1 && cfg.systems.length === 1 ? before.systems[0] : null));
@@ -186,12 +181,9 @@ function deployRecord({ environment, system, root = process.cwd(), configPath = 
       released_at: releasedAt,
       ...(hint ? { system_hint: hint } : {}),
       changes,
-      model,
-      ...facts,
+      // A config-only record (no system) carries no release facts.
       // shortcut: tool names and eval run ids aren't known to the action yet (it hashes tool files); add --eval-run-id / tool names when Complyd uses them.
-      tools: [],
-      datasets,
-      eval_run_ids: [],
+      ...(s ? { model, ...facts, tools: [], datasets, eval_run_ids: [] } : {}),
       config_changed,
       repo_config,
     };

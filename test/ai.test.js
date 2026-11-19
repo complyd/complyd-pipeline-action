@@ -551,7 +551,7 @@ test('config v2: errors name the system entry and say what to fix', () => {
   }
 });
 
-test('globs: * stays in a directory, ** spans any, ? is one character; the most specific glob owns a file; a tie is an error', () => {
+test('globs: * stays in a directory, ** spans any, ? is one character; the most specific glob owns a file; on a tie it belongs to neither', () => {
   const t = (g, f) => globMatch(g, f);
   assert.ok(t('src/**/*.py', 'src/a.py') && t('src/**/*.py', 'src/a/b/c.py'));
   assert.ok(!t('src/**/*.py', 'srcx/a.py') && !t('src/*.py', 'src/a/b.py'));
@@ -567,7 +567,16 @@ test('globs: * stays in a directory, ** spans any, ? is one character; the most 
     'version: 2\nsystems:\n  - system: a\n    paths: ["src/*/x"]\n    prompts: [src/b/x]\n    suites:\n      - name: s1\n        test_set: { version: "1" }\n  - system: b\n    paths: ["src/a/*"]\n    prompts: [src/a/y]\n    suites:\n      - name: s2\n        test_set: { version: "1" }',
   );
   assert.equal(ownerOf(tie, 'src/b/x').system, 'a');
-  assert.throws(() => ownerOf(tie, 'src/a/x'), { code: 'config', message: /src\/a\/x matches the paths of a and b equally: make one of their globs more specific/ });
+  assert.equal(ownerOf(tie, 'src/a/x'), undefined);
+});
+
+test('globs: ownerOf matches the ownership vectors Complyd tests against', () => {
+  const { cases } = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'repo-config-ownership.vectors.json'), 'utf8'));
+  assert.equal(cases.length, 9);
+  for (const c of cases) {
+    const cfg = { systems: Object.entries(c.systems).map(([system, paths]) => ({ system, paths })) };
+    assert.equal(ownerOf(cfg, c.file)?.system ?? null, c.owner, c.name);
+  }
 });
 
 /** A v2 config of the given systems: [name, paths, extra yaml lines]; each also owns and declares prompts/<name>.txt. */
@@ -772,7 +781,7 @@ test('deploy record v2: one record per touched system, chosen by paths and AI fi
   assert.match(unknown.err[0], /lists no system "nope" \(it lists support-assistant, AIS-0042\)/);
 });
 
-test('deploy record v2: a changed file two systems own equally is a config error', () => {
+test('deploy record v2: a changed file two systems match equally belongs to neither', () => {
   const { dir, git } = gitRepo();
   const yml =
     'version: 2\nsystems:\n  - system: a\n    paths: ["src/*/x"]\n    prompts: [src/b/x]\n    suites:\n      - name: s1\n        test_set: { version: "1" }\n  - system: b\n    paths: ["src/a/*"]\n    prompts: [src/a/y]\n    suites:\n      - name: s2\n        test_set: { version: "1" }\n';
@@ -782,7 +791,7 @@ test('deploy record v2: a changed file two systems own equally is a config error
   writeFileSync(join(dir, 'src', 'a', 'x'), 'x\n');
   git('add', '-A');
   git('commit', '-qm', 'three');
-  assert.throws(() => deployRecord({ environment: 'production', root: dir }), { code: 'config', message: /src\/a\/x matches the paths of a and b equally/ });
+  assert.deepEqual(deployRecord({ environment: 'production', root: dir }), []);
 });
 
 test('deploy record v2: a config-only change (paths, rename, removal, comment) gives one record without a system', () => {
@@ -803,8 +812,8 @@ test('deploy record v2: a config-only change (paths, rename, removal, comment) g
   ]) {
     const recs = commit(text, msg);
     assert.equal(recs.length, 1, msg);
-    assert.deepEqual(Object.keys(recs[0]).sort(), [...RELEASE_KEYS].sort(), msg);
-    assert.deepEqual(recs[0].model, { provider: 'none', id: 'none' }, msg);
+    assert.deepEqual(Object.keys(recs[0]).sort(), ['commit', 'environment', 'released_at', 'changes', 'config_changed', 'repo_config'].sort(), msg);
+    assertValid('ai_release.v2', recs[0]);
     assert.equal(recs[0].config_changed, true, msg);
     assert.deepEqual(recs[0].changes, [], msg);
     assert.deepEqual(recs[0].repo_config, repoConfig(parseConfig(text)), msg);

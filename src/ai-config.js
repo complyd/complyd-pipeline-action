@@ -356,14 +356,12 @@ function owners(cfg, file) {
 
 /**
  * The system a repository file belongs to: the one whose matching glob is
- * the most specific; undefined when none matches. A tie is a config error.
+ * the most specific; undefined when none matches or several tie (as Complyd
+ * reads it: test/fixtures/repo-config-ownership.vectors.json).
  */
 function ownerOf(cfg, file) {
   const found = owners(cfg, file);
-  if (found.length > 1) {
-    throw new ActionError('config', `Fix .complyd/ai.yml: ${file} matches the paths of ${found.map((s) => s.system).join(' and ')} equally: make one of their globs more specific.`);
-  }
-  return found[0];
+  return found.length === 1 ? found[0] : undefined;
 }
 
 /** A number as the schema's decimal string (≤ 12 integer and 9 fraction digits), else undefined. */
