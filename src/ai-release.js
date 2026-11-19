@@ -58,6 +58,7 @@ function material(cfg, read) {
     if (bytes !== null && bytes !== undefined) m[kind].push([label, Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)]);
     else m[kind].push([label, null]);
   };
+  if (cfg.model.ref) add('model', DEFAULT_CONFIG + '#model', JSON.stringify(cfg.model.ref));
   for (const p of cfg.model.files) {
     const b = read(p);
     if (!cfg.model.keys.length || b === null) add('model', p, b);
@@ -95,10 +96,21 @@ function digest(entries) {
   return sha256(lines.join(''));
 }
 
+/** The kinds whose HEAD hash the record states as a fact, and the field each goes in. */
+const FACTS = { model_params: 'params_sha256', prompt: 'prompt_sha256', safety_prompt: 'safety_sha256', retrieval: 'retrieval_sha256', product_config: 'config_sha256', eval_method: 'evaluator_sha256' };
+/** Complyd's ai_release schema caps. */
+const MAX_DATASETS = 20;
 /**
- * The deploy record (ai_release v1 draft): what changed in the configured AI
- * files between HEAD's parent and HEAD, as kinds and before/after hashes.
- * Each commit's files are read under that commit's own .complyd/ai.yml.
+ * The model of a record no system owns (a config-only change): Complyd
+ * ignores it there, but the schema requires one.
+ */
+const NO_MODEL = { provider: 'none', id: 'none' };
+
+/**
+ * The deploy record (Complyd's ai_release v2): what changed in the configured
+ * AI files between HEAD's parent and HEAD, as kinds and before/after hashes,
+ * and the facts of HEAD: the deployed model, each layer's hash, the datasets'
+ * hashes. Each commit's files are read under that commit's own .complyd/ai.yml.
  * Returns one record for a version 1 config; for version 2 a list, one per
  * system owning a changed file (or just `system`'s), plus, when
  * .complyd/ai.yml changed and no system's record would carry that, one record
@@ -132,42 +144,69 @@ function deployRecord({ environment, system, root = process.cwd(), configPath = 
       warn(`The previous commit's ${configPath} isn't valid, so every kind is reported as changed.`);
     }
   }
-  const common = {
-    commit: head,
-    previous_commit: prev,
-    recorded_at: now().toISOString(),
-    config_changed: prevText === null || !prevText.equals(cfgText),
-  };
+  const releasedAt = now().toISOString();
+  const config_changed = prevText === null || !prevText.equals(cfgText);
   const repo_config = repoConfig(cfg);
-  /** One system's changes: its material at HEAD against the same system's at the previous commit. */
-  const changesOf = (s) => {
-    const was = before && (before.systems.find((b) => b.system === s.system) ?? (before.systems.length === 1 && cfg.systems.length === 1 ? before.systems[0] : null));
-    const after = material(s, (p) => fileAt(root, 'HEAD', p));
-    const old = was ? material(was, (p) => fileAt(root, prev, p)) : null;
+  /** The record of system `s` (null: no system's), `hint` its name: its changes against the same system at the previous commit, and HEAD's facts. */
+  const recordOf = (s, hint) => {
     const changes = [];
-    for (const kind of KINDS) {
-      const a = digest(after[kind]);
-      const b = old ? digest(old[kind]) : null;
-      if (a !== b) changes.push({ kind, before_sha256: b, after_sha256: a });
+    const facts = {};
+    let model = NO_MODEL;
+    let datasets = [];
+    if (s) {
+      const was = before && (before.systems.find((b) => b.system === s.system) ?? (before.systems.length === 1 && cfg.systems.length === 1 ? before.systems[0] : null));
+      const after = material(s, (p) => fileAt(root, 'HEAD', p));
+      const old = was ? material(was, (p) => fileAt(root, prev, p)) : null;
+      for (const kind of KINDS) {
+        const a = digest(after[kind]);
+        const b = old ? digest(old[kind]) : null;
+        if (a !== b) changes.push({ kind, ...(b ? { before_sha256: b } : {}), ...(a ? { after_sha256: a } : {}) });
+        if (FACTS[kind] && a) facts[FACTS[kind]] = a;
+      }
+      const where = cfg.version === 1 ? 'model' : `systems[${cfg.systems.indexOf(s)}].model`;
+      if (!s.model.ref) throw new ActionError('config', `Fix ${configPath}: ${where}: deploy record needs the deployed model: set provider: and id: (and version:), e.g. model: { provider: openai, id: gpt-4o-mini, version: "2024-07-18" }.`);
+      const { provider, id, version } = s.model.ref;
+      model = { provider, id, ...(version ? { version } : {}) };
+      const seen = new Set();
+      for (const d of Object.values(s.datasets)) {
+        const bytes = fileAt(root, 'HEAD', d.path);
+        if (bytes === null) {
+          warn(`${d.path} (a dataset in ${configPath}) isn't in HEAD: left out of the deploy record.`);
+          continue;
+        }
+        const h = sha256(bytes);
+        if (!seen.has(h)) datasets.push({ ...(d.ref ? { ref: d.ref } : {}), sha256: h });
+        seen.add(h);
+      }
+      if (datasets.length > MAX_DATASETS) throw new ActionError('config', `Fix ${configPath}: ${where.replace(/model$/, 'datasets')}: Complyd takes at most ${MAX_DATASETS} datasets per deploy record.`);
     }
-    return changes;
+    return {
+      commit: head,
+      environment,
+      released_at: releasedAt,
+      ...(hint ? { system_hint: hint } : {}),
+      changes,
+      model,
+      ...facts,
+      // shortcut: tool names and eval run ids aren't known to the action yet (it hashes tool files); add --eval-run-id / tool names when Complyd uses them.
+      tools: [],
+      datasets,
+      eval_run_ids: [],
+      config_changed,
+      repo_config,
+    };
   };
 
-  if (cfg.version === 1) {
-    const hint = system ?? cfg.system;
-    return { environment, ...(hint ? { system: hint } : {}), ...common, changes: changesOf(cfg), repo_config };
-  }
+  if (cfg.version === 1) return recordOf(cfg, system ?? cfg.system);
   if (system !== undefined && !cfg.systems.some((s) => s.system === system)) {
     throw new ActionError('usage', `--system: ${configPath} lists no system "${system}" (it lists ${cfg.systems.map((s) => s.system).join(', ')}).`);
   }
   const files = git(root, ['diff', '--name-only', '--no-renames', '--relative', '-z', prev, head]).toString('utf8').split('\0').filter(Boolean);
   // A changed file belongs to its owner only (the overlap winner), AI files included.
   const hit = new Set(files.map((f) => ownerOf(cfg, f)).filter(Boolean));
-  const records = cfg.systems
-    .filter((s) => (system !== undefined ? s.system === system : hit.has(s)))
-    .map((s) => ({ environment, system: s.system, ...common, changes: changesOf(s), repo_config }));
+  const records = cfg.systems.filter((s) => (system !== undefined ? s.system === system : hit.has(s))).map((s) => recordOf(s, s.system));
   // A config change no system's record carries (mapping, rename, removal, comment): one record without a system.
-  if (!records.length && common.config_changed) records.push({ environment, ...common, changes: [], repo_config });
+  if (!records.length && config_changed) records.push(recordOf(null));
   return records;
 }
 

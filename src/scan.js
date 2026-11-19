@@ -111,7 +111,7 @@ async function scan(
 
 /**
  * An AI eval run: read the tool's results file and .complyd/ai.yml, build
- * ai_eval v1 (hashes, counts and metric values only) and post it as
+ * ai_eval v2 (hashes, counts and metric values only) and post it as
  * collector complyd_ai_release, unless `dryRun`. `workspace` is the
  * repository root the config's paths are relative to. Resolves Complyd's
  * answer (null on a dry run), the envelope sent (or that would be) and warnings.
@@ -138,7 +138,8 @@ async function scanAi(
     warn: (w) => warnings.push(w),
   });
   const id = aiEnvelopeId(runKey, role, format, input);
-  const body = fitSuites(envelope(payload, { id, subject, observedAt: at, schema: 'ai_eval', collector: 'complyd_ai_release' }));
+  // v2: the payload carries repo_config, which v1 refuses.
+  const body = fitSuites(envelope(payload, { id, subject, observedAt: at, schema: 'ai_eval', collector: 'complyd_ai_release', schemaVersion: 2 }));
   const sent = JSON.parse(body);
   if (dryRun) return { answer: null, envelope: sent, warnings };
   const answer = await send({ apiUrl, trust, body, getToken }, fetchImpl, sleep);

@@ -499,6 +499,9 @@ sent: the suite is sent under its `name:` from the config.
 version: 1
 system: support-assistant            # optional: the AI system's name
 model:                               # files that pick the model
+  provider: openai                   # the deployed model (deploy record needs it)
+  id: gpt-4o-mini
+  version: "2024-07-18"              # optional
   files: [config/llm.yaml]
   keys: [model, model_version]       # these lines are the model; the rest are its parameters
 prompts:                             # prompt files (hashed; default for every suite)
@@ -557,6 +560,8 @@ systems:
   - system: support-assistant          # the AI system's name or its AIS-… reference
     paths: ["services/support/**", "prompts/support/**"]
     model:
+      provider: openai
+      id: gpt-4o-mini
       files: [services/support/llm.yaml]
       keys: [model]
     prompts: [prompts/support/system.txt]
@@ -568,6 +573,7 @@ systems:
           pass_rate: { gte: 0.95 }
   - system: search-ranker
     paths: ["services/**"]               # services/support/ stays with support-assistant: more specific
+    model: { provider: example-ai, id: rerank-1 }
     prompts: [services/search/rerank.txt]
     suites:
       - name: ranking-quality
@@ -712,9 +718,14 @@ complyd-pipeline deploy record --environment production [--system support-assist
 
 compares the files `.complyd/ai.yml` names at the deployed commit and its
 parent and prints which kinds changed, each with a before and after
-SHA-256: `model`, `model_params`, `prompt`, `safety_prompt`, `eval_suite`
-(suite files and settings), `dataset`, `retrieval`, `tools`,
-`product_config` and `eval_method` (evaluator settings, rubrics, graders).
+SHA-256 (a kind with no files on one side has no hash there): `model`
+(the model files and `model:`'s provider, id and version), `model_params`,
+`prompt`, `safety_prompt`, `eval_suite` (suite files and settings),
+`dataset`, `retrieval`, `tools`, `product_config` and `eval_method`
+(evaluator settings, rubrics, graders). Beside its diff the record states
+the deployed commit's facts: the deployed model (`model:`'s `provider:`,
+`id:` and `version:`, required for `deploy record`), each layer's hash and
+the datasets' hashes (see [What Complyd receives](#what-complyd-receives)).
 The record also says whether `.complyd/ai.yml` itself changed
 (`config_changed`) and carries `repo_config`. No file content is in the
 record, and no path other than the globs under `paths:`.
@@ -723,7 +734,8 @@ With a version 2 file it prints a list: one record per system that owns a
 changed file (the owner of a file two systems match, see above). When
 `.complyd/ai.yml` changed (paths, a renamed or removed system, even a
 comment) and no system owns a changed file, the list is one record without
-`system`, with no `changes`, carrying `config_changed: true` and the new
+`system_hint`, with no `changes` and the model `none/none` (Complyd ignores a
+config-only record's model), carrying `config_changed: true` and the new
 `repo_config`. A commit that touches none prints `[]` with a warning.
 `--system` picks one system from the file (its record is printed even when
 the commit doesn't touch it). It needs the parent commit
@@ -776,8 +788,36 @@ Every scan is sent as collector `complyd_ci_scan` with `collector_version`
 set to this package's version: Complyd's id for this tool, unchanged by the
 rename to Complyd pipeline. An AI eval run is sent as collector
 `complyd_ai_release` (Complyd lists it as **Complyd AI release**), schema
-`ai_eval` v1, one observation per results file and role
-(`<run id>-<run attempt>-ai_eval-<hash>`).
+`ai_eval` v2, one observation per results file and role
+(`<run id>-<run attempt>-ai_eval-<hash>`): the eval tool's name and version,
+the format, the commit, the run id, the run time, the suites (see
+[AI release](#ai-release)), whether the list was cut (`truncated`) and
+`repo_config`.
+
+A deploy record (`deploy record`, dry run only for now) is schema
+`ai_release` v2 of the same collector:
+
+| Field | What it is |
+|---|---|
+| `commit` | the deployed commit |
+| `environment` | `--environment` |
+| `released_at` | when the record was made (also the envelope's `observed_at`) |
+| `system_hint` | the system's name (`--system`, `system:`); left out of a config-only record |
+| `changes` | per changed kind: `kind`, `before_sha256`, `after_sha256` (against the parent commit) |
+| `model` | the deployed model: `provider`, `id`, `version` from `model:` |
+| `params_sha256`, `prompt_sha256`, `safety_sha256`, `retrieval_sha256`, `config_sha256`, `evaluator_sha256` | the deployed commit's hash of the model parameters, prompts, safety sections, retrieval, product config and eval method (the `changes` hash of that kind; left out when it has no files) |
+| `tools` | tool names: always `[]` for now (tool files are hashed under `changes`) |
+| `datasets` | per dataset: its `ref:` and the file's SHA-256 at the deployed commit |
+| `eval_run_ids` | always `[]` for now (Complyd links eval runs by commit) |
+| `config_changed` | whether `.complyd/ai.yml` differs from the parent commit's |
+| `repo_config` | below |
+
+A layer hash is SHA-256 of sorted `<sha256|missing>  <file>` lines, so it is
+not the file's own hash `scan ai_eval` sends. Not sent (optional in
+Complyd's schema): `pull_request`, `endpoint_region`. Both schemas are
+version 2 because of `repo_config` (and `config_changed`): Complyd's
+version 1 refuses them. `test/fixtures/schemas` holds the copies of
+Complyd's schema files the tests validate the dry-run output against.
 
 An AI eval run and a deploy record also carry `repo_config`, what
 `.complyd/ai.yml` says about where each system lives and what it must pass:

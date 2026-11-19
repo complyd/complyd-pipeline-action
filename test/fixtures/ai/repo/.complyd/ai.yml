@@ -2,6 +2,9 @@
 version: 1
 system: support-assistant
 model:
+  provider: openai                 # the deployed model (deploy record)
+  id: gpt-4o-mini
+  version: "2024-07-18"
   files: [config/llm.yaml]
   keys: [model, model_version]
 prompts:

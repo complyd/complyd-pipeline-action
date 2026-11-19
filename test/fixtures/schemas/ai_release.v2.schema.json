@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI release deploy record of one repository (Complyd AI release, v2)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["commit", "environment", "released_at", "changes", "model", "tools", "datasets", "eval_run_ids"],
+  "properties": {
+    "commit": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+      "x-complyd-privacy": "none"
+    },
+    "environment": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/-]{1,64}$",
+      "x-complyd-privacy": "none"
+    },
+    "released_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 40,
+      "x-complyd-privacy": "none"
+    },
+    "system_hint": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 ._:/@+-]{1,200}$",
+      "x-complyd-privacy": "none"
+    },
+    "pull_request": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000,
+      "x-complyd-privacy": "none"
+    },
+    "changes": {
+      "type": "array",
+      "maxItems": 50,
+      "x-complyd-privacy": "none",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {
+          "kind": {
+            "enum": [
+              "model",
+              "model_params",
+              "prompt",
+              "safety_prompt",
+              "retrieval",
+              "tools",
+              "product_config",
+              "eval_suite",
+              "eval_method",
+              "dataset",
+              "other"
+            ],
+            "x-complyd-privacy": "none"
+          },
+          "baseline_ref": { "$ref": "#/$defs/ref", "x-complyd-privacy": "none" },
+          "candidate_ref": { "$ref": "#/$defs/ref", "x-complyd-privacy": "none" },
+          "before_sha256": { "$ref": "#/$defs/sha256", "x-complyd-privacy": "none" },
+          "after_sha256": { "$ref": "#/$defs/sha256", "x-complyd-privacy": "none" }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "id"],
+      "x-complyd-privacy": "none",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "x-complyd-privacy": "none"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/@+-]{1,128}$",
+          "x-complyd-privacy": "none"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/@+-]{1,64}$",
+          "x-complyd-privacy": "none"
+        }
+      }
+    },
+    "endpoint_region": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "x-complyd-privacy": "none"
+    },
+    "params_sha256": { "$ref": "#/$defs/sha256", "x-complyd-privacy": "none" },
+    "prompt_sha256": { "$ref": "#/$defs/sha256", "x-complyd-privacy": "none" },
+    "safety_sha256": { "$ref": "#/$defs/sha256", "x-complyd-privacy": "none" },
+    "retrieval_sha256": { "$ref": "#/$defs/sha256", "x-complyd-privacy": "none" },
+    "tools": {
+      "type": "array",
+      "maxItems": 50,
+      "x-complyd-privacy": "none",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._:/@+-]{1,64}$",
+        "x-complyd-privacy": "none"
+      }
+    },
+    "config_sha256": { "$ref": "#/$defs/sha256", "x-complyd-privacy": "none" },
+    "evaluator_sha256": { "$ref": "#/$defs/sha256", "x-complyd-privacy": "none" },
+    "datasets": {
+      "type": "array",
+      "maxItems": 20,
+      "x-complyd-privacy": "none",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sha256"],
+        "x-complyd-privacy": "none",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/@+-]{1,200}$",
+            "x-complyd-privacy": "none"
+          },
+          "sha256": { "$ref": "#/$defs/sha256", "x-complyd-privacy": "none" }
+        }
+      }
+    },
+    "eval_run_ids": {
+      "type": "array",
+      "maxItems": 20,
+      "x-complyd-privacy": "none",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._:/-]{1,128}$",
+        "x-complyd-privacy": "none"
+      }
+    },
+    "config_changed": { "type": "boolean", "x-complyd-privacy": "none" },
+    "repo_config": { "$ref": "#/$defs/repo_config", "x-complyd-privacy": "none" }
+  },
+  "$defs": {
+    "ref": { "type": "string", "pattern": "^[A-Za-z0-9._:/@+-]{1,300}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "repo_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "config_sha256", "systems"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1, "maximum": 2, "x-complyd-privacy": "none" },
+        "config_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "x-complyd-privacy": "none" },
+        "systems": {
+          "type": "array",
+          "maxItems": 50,
+          "x-complyd-privacy": "none",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["paths", "suites"],
+            "properties": {
+              "system": { "type": "string", "pattern": "^[A-Za-z0-9 ._:/@+-]{1,128}$", "x-complyd-privacy": "none" },
+              "paths": {
+                "type": "array",
+                "maxItems": 100,
+                "x-complyd-privacy": "none",
+                "items": { "type": "string", "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$))[A-Za-z0-9 ._@+/*?-]{1,200}$" }
+              },
+              "suites": {
+                "type": "array",
+                "maxItems": 50,
+                "x-complyd-privacy": "none",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "required", "metrics"],
+                  "properties": {
+                    "name": { "type": "string", "pattern": "^[A-Za-z0-9 ._:/@+-]{1,128}$", "x-complyd-privacy": "none" },
+                    "required": { "type": "boolean", "x-complyd-privacy": "none" },
+                    "metrics": {
+                      "type": "object",
+                      "propertyNames": { "type": "string", "pattern": "^[A-Za-z0-9 ._:/@+-]{1,64}$" },
+                      "maxProperties": 50,
+                      "x-complyd-privacy": "none",
+                      "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "x-complyd-privacy": "none",
+                        "properties": {
+                          "gte": { "type": "string", "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,9})?$", "x-complyd-privacy": "none" },
+                          "lte": { "type": "string", "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,9})?$", "x-complyd-privacy": "none" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

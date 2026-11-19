@@ -17,7 +17,7 @@ const USAGE = `Usage: complyd-pipeline scan dependencies|sast --input <file> [op
        complyd-pipeline deploy record --environment <env> --dry-run [--system <name>]
 
 Sends a scanner's results to Complyd (dependency_scan v1 or sast_scan v1), or
-an AI eval run's results (ai_eval v1: hashes, counts and metric values only).
+an AI eval run's results (ai_eval v2: hashes, counts and metric values only).
 
   --input <path>        SARIF 2.1.0 or OSV-Scanner JSON (sast: SARIF; repeat it
                         or name a directory of .sarif files to merge them)
@@ -319,8 +319,9 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
       const root = first(values.workspace) ?? process.cwd();
       const now = deps.now ?? (() => new Date());
       const rec = deployRecord({ environment: values.environment, system: values.system, root, configPath: values['suite-config'], now, warn: (w) => err(`warning: ${w}`) });
+      // v2: every record carries repo_config and config_changed, which v1 refuses.
       const wrap = (payload) => {
-        const env = envelope(payload, { id: `ci-${randomUUID().replace(/-/g, '')}-ai_release`, subject: first(values.repo) ?? 'dry-run', observedAt: payload.recorded_at, schema: 'ai_release', collector: 'complyd_ai_release' });
+        const env = envelope(payload, { id: `ci-${randomUUID().replace(/-/g, '')}-ai_release`, subject: first(values.repo) ?? 'dry-run', observedAt: payload.released_at, schema: 'ai_release', collector: 'complyd_ai_release', schemaVersion: 2 });
         // The same 64 KiB cap as a sent scan, repo_config included.
         if (Buffer.byteLength(JSON.stringify(env)) > MAX_BODY_BYTES) throw overCap({ ...env, payload: { ...payload, changes: [] } }, 'payload.changes');
         return env;
