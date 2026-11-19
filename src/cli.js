@@ -357,16 +357,7 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
   }
 }
 
-const DEPRECATED =
-  'warning: complyd-ci-scan is deprecated and goes away in 1.2.0: run complyd-pipeline scan dependencies|sast with the same options.';
-
-/** The 1.0 command, `complyd-ci-scan dependency|sast …`: a notice, then `complyd-pipeline scan …`. */
-async function legacyMain(argv = process.argv.slice(2), env = process.env, deps = {}) {
-  (deps.err ?? console.error)(DEPRECATED);
-  return main(['scan', ...argv], env, deps);
-}
-
-module.exports = { main, legacyMain, parse, options, USAGE, DEPRECATED };
+module.exports = { main, parse, options, USAGE };
 
 if (require.main === module) {
   main().then((code) => {

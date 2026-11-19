@@ -260,7 +260,6 @@ test('--input must be a regular file: a FIFO or device is refused before it is r
   assert.match(err.join('\n'), /isn't a regular file/);
 });
 
-const { legacyMain, DEPRECATED } = require('../src/cli');
 const CIRCLE_JOB = '0f1e2d3c-4b5a-4968-8776-655443322110';
 const CIRCLE_PROJECT = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 const CIRCLECI = { CIRCLECI: 'true', CIRCLE_WORKFLOW_JOB_ID: CIRCLE_JOB, CIRCLE_SHA1: SHA, COMPLYD_ID_TOKEN: GITLAB.COMPLYD_ID_TOKEN };
@@ -282,21 +281,7 @@ test('subcommands: scan dependencies|dependency|sast|ai_eval, deploy record; any
   }
 });
 
-test('deprecated complyd-ci-scan: one notice on stderr, then the same scan as complyd-pipeline scan', async () => {
-  const argv = ['dependency', '--input', OSV, '--repo', 'jenkins:acme/app', '--commit', SHA, '--run-id', 'b42'];
-  const out = [];
-  const err = [];
-  const s = stub();
-  const code = await legacyMain(argv, { COMPLYD_INGEST_KEY: KEY }, { ...s, now: () => new Date('2026-11-14T08:00:00Z'), out: (l) => out.push(l), err: (l) => err.push(l) });
-  assert.equal(code, 0);
-  assert.deepEqual(err, [DEPRECATED]);
-  assert.match(DEPRECATED, /^warning: complyd-ci-scan is deprecated .*complyd-pipeline scan/);
-  const now = await cli(['scan', 'dependencies', ...argv.slice(1)], { COMPLYD_INGEST_KEY: KEY });
-  assert.equal(now.err.length, 0);
-  assert.equal(s.posts()[0].init.body, now.s.posts()[0].init.body);
-});
-
-test('bins: complyd-pipeline and the deprecated complyd-ci-scan run from package.json', async () => {
+test('bin: complyd-pipeline runs from package.json, and the removed complyd-ci-scan is gone', async () => {
   const pkg = require('../package.json');
   const exec = (file, args) =>
     new Promise((ok) =>
@@ -304,14 +289,9 @@ test('bins: complyd-pipeline and the deprecated complyd-ci-scan run from package
         ok({ code: e ? e.code : 0, stdout, stderr }),
       ),
     );
-  assert.deepEqual(Object.keys(pkg.bin), ['complyd-pipeline', 'complyd-ci-scan']);
+  assert.deepEqual(Object.keys(pkg.bin), ['complyd-pipeline']);
   const current = await exec(pkg.bin['complyd-pipeline'], ['--version']);
   assert.deepEqual([current.code, current.stdout, current.stderr], [0, `${pkg.version}\n`, '']);
-  const legacy = await exec(pkg.bin['complyd-ci-scan'], ['--version']);
-  assert.deepEqual([legacy.code, legacy.stdout, legacy.stderr], [0, `${pkg.version}\n`, `${DEPRECATED}\n`]);
-  const usage = await exec(pkg.bin['complyd-ci-scan'], ['dependency']);
-  assert.equal(usage.code, 2);
-  assert.match(usage.stderr, /deprecated[^\n]*\nerror: Set --input/);
 });
 
 test('CircleCI: the token from --id-token-var, --repo circleci-oidc:<project id>, run key from the workflow job id', async () => {

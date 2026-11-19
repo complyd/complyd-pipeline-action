@@ -189,9 +189,8 @@ option. Exit code 0: sent, or Complyd already has a newer scan; 1: refused
 or failed (the line says what to do); 2: a wrong option.
 
 **Renamed in 1.1.0.** The command was `complyd-ci-scan dependency|sast …`.
-That name still works in 1.1.x, with the same options, and prints a
-deprecation line on stderr; it goes away in 1.2.0. Change it to
-`complyd-pipeline scan dependencies|sast …`.
+The old name was removed in 1.2.0. Use
+`complyd-pipeline scan dependencies|sast …` with the same options.
 
 Install it from this repository, pinned to a release commit
 (`npm install --global github:complyd/complyd-pipeline-action#<commit SHA>`), or

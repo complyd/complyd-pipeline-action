@@ -10,8 +10,7 @@
   },
   "main": "src/index.js",
   "bin": {
-    "complyd-pipeline": "src/cli.js",
-    "complyd-ci-scan": "src/ci-scan.js"
+    "complyd-pipeline": "src/cli.js"
   },
   "files": [
     "src/",
