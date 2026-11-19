@@ -4,12 +4,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { join } = require('path');
 const { createHash } = require('crypto');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, writeFileSync, readFileSync, mkdirSync, cpSync, symlinkSync } = require('fs');
 const { tmpdir } = require('os');
 const { parseYaml } = require('../src/yaml');
-const { parseConfig, loadConfig, hashFiles, repoConfig, ownerOf, globRegExp } = require('../src/ai-config');
-const { PARSERS, FORMATS, buildPayload, decimal, providerModel, aiEnvelopeId } = require('../src/ai-eval');
+const { parseConfig, loadConfig, hashFiles, repoConfig, ownerOf, globMatch } = require('../src/ai-config');
+const { PARSERS, FORMATS, buildPayload, fitSuites, decimal, providerModel, aiEnvelopeId } = require('../src/ai-eval');
+const { envelope, MAX_BODY_BYTES } = require('../src/post');
 const { deployRecord, sections, splitModel } = require('../src/ai-release');
 const { main } = require('../src/cli');
 const { run } = require('../src/index');
@@ -624,7 +625,7 @@ test('config v2: errors name the system entry and say what to fix', () => {
 });
 
 test('globs: * stays in a directory, ** spans any, ? is one character; the most specific glob owns a file; a tie is an error', () => {
-  const t = (g, f) => globRegExp(g).test(f);
+  const t = (g, f) => globMatch(g, f);
   assert.ok(t('src/**/*.py', 'src/a.py') && t('src/**/*.py', 'src/a/b/c.py'));
   assert.ok(!t('src/**/*.py', 'srcx/a.py') && !t('src/*.py', 'src/a/b.py'));
   assert.ok(t('**', 'any/file') && t('a/**', 'a/b/c') && !t('a/**', 'ab/c'));
@@ -640,6 +641,73 @@ test('globs: * stays in a directory, ** spans any, ? is one character; the most 
   );
   assert.equal(ownerOf(tie, 'src/b/x').system, 'a');
   assert.throws(() => ownerOf(tie, 'src/a/x'), { code: 'config', message: /src\/a\/x matches the paths of a and b equally: make one of their globs more specific/ });
+});
+
+/** A v2 config of the given systems: [name, paths, extra yaml lines]. */
+const sysYaml = (list) =>
+  'version: 2\nsystems:\n' +
+  list.map(([name, paths, extra = '']) => `  - system: ${name}\n    paths: ${JSON.stringify(paths)}\n    prompts: [prompts/support.txt]\n${extra}    suites:\n      - name: ${name}-s\n        test_set: { version: "1" }\n`).join('');
+
+test('globs: matching is linear, whatever the glob and path (no backtracking blow-up)', () => {
+  const probe = (glob, file) => {
+    const code = `const { globMatch } = require(${JSON.stringify(join(__dirname, '..', 'src', 'ai-config.js'))}); process.stdout.write(String(globMatch(${JSON.stringify(glob)}, ${JSON.stringify(file)})));`;
+    const r = spawnSync(process.execPath, ['-e', code], { timeout: 5000, encoding: 'utf8' });
+    assert.equal(r.error, undefined, `timed out: ${glob}`);
+    return r.stdout;
+  };
+  // Many * in one part, and many ** parts (before normalising): each took past a 1.5 s timeout as a RegExp.
+  assert.equal(probe('*a'.repeat(30) + 'b', 'a'.repeat(60)), 'false');
+  assert.equal(probe(Array(24).fill('**').join('/') + '/z', Array(40).fill('a').join('/') + '/y'), 'false');
+  assert.equal(probe(Array(24).fill('*a').join('/') + '/z', Array(40).fill('a').join('/') + '/y'), 'false');
+  const cfg = parseConfig(sysYaml([['a', ['*a'.repeat(30) + 'b']]]));
+  const t0 = Date.now();
+  assert.equal(ownerOf(cfg, 'a'.repeat(60)), undefined);
+  assert.ok(Date.now() - t0 < 1000);
+});
+
+test('globs: equal globs are one spelling (consecutive ** collapse); the most literal glob wins, extra ** add nothing', () => {
+  assert.deepEqual(parseConfig(sysYaml([['a', ['src/**/**/x', '**/**']]])).systems[0].paths, ['src/**/x', '**']);
+  assert.throws(() => parseConfig(sysYaml([['a', ['**']], ['b', ['**/**']]])), { code: 'config', message: /systems\[1\].paths: "\*\*" is also in systems\[0\].paths/ });
+  const cfg = parseConfig(sysYaml([['a', ['src/**']], ['b', ['**/*/**/*/**/*/**/*']]]));
+  assert.equal(ownerOf(cfg, 'src/file.js').system, 'a');
+  assert.equal(ownerOf(cfg, 'lib/a/b/c/d').system, 'b');
+  for (const [g, f, want] of [
+    ['**/x', 'x', true],
+    ['**/x', 'a/b/x', true],
+    ['a/**/b', 'a/b', true],
+    ['a/**', 'a', false],
+    ['a/*/b', 'a/b', false],
+    ['*.py', 'a/b.py', false],
+    ['a?c', 'abc', true],
+    ['a?c', 'ac', false],
+  ]) {
+    assert.equal(globMatch(g, f), want, `${g} ~ ${f}`);
+  }
+});
+
+test('thresholds: only values the wire decimal holds exactly (≤ 12 integer, ≤ 9 fraction digits); errors name the field', () => {
+  const metric = (v) => sysYaml([['a', ['**'], '']]).replace('test_set: { version: "1" }', `test_set: { version: "1" }\n        metrics:\n          tokens: { lte: ${v} }`);
+  for (const v of ['1000000000000', '-1000000000000', '0.0000000001', '0.1234567891', '1e300']) {
+    assert.throws(() => parseConfig(metric(v)), { code: 'config', message: /systems\[0\].suites\[0\].metrics.tokens.lte: set a number below 1000000000000 with at most 9 decimal places/ }, v);
+  }
+  for (const [v, wire] of [['999999999999', '999999999999'], ['0.123456789', '0.123456789'], ['-0.5', '-0.5'], ['0', '0']]) {
+    assert.deepEqual(repoConfig(parseConfig(metric(v))).systems[0].suites[0].metrics, { tokens: { lte: wire } });
+  }
+});
+
+test('ai_eval body: repo_config counts against the 64 KiB cap and is never cut; an error names it', () => {
+  const long = (i, j) => `services/s${i}/` + 'd'.repeat(170) + `/p${j}/**`;
+  const big = parseConfig(sysYaml([0, 1, 2, 3, 4].map((i) => [`s${i}`, Array.from({ length: 100 }, (_, j) => long(i, j))])));
+  const env = (cfg, suites) => envelope({ suites, truncated: false, repo_config: repoConfig(cfg) }, { id: 'x', subject: 'x', observedAt: 'x', schema: 'ai_eval' });
+  assert.ok(Buffer.byteLength(JSON.stringify(repoConfig(big))) > MAX_BODY_BYTES);
+  assert.throws(() => fitSuites(env(big, [{ name: 'one' }])), { code: 'config', message: /^repo_config \(the summary of .complyd\/ai.yml: \d+ bytes\) doesn't fit Complyd's 64 KiB request/ });
+  // repo_config fits, one suite too big beside it: that suite is named.
+  assert.throws(() => fitSuites(env(v2(), [{ name: 'x'.repeat(MAX_BODY_BYTES) }])), { code: 'config', message: /^payload.suites\[0\] doesn't fit/ });
+  // Suites are cut, repo_config kept whole.
+  const body = JSON.parse(fitSuites(env(v2(), [{ name: 'a' }, { name: 'x'.repeat(MAX_BODY_BYTES) }])));
+  assert.deepEqual(body.payload.suites.map((x) => x.name), ['a']);
+  assert.equal(body.payload.truncated, true);
+  assert.deepEqual(body.payload.repo_config, repoConfig(v2()));
 });
 
 test('repo_config: names, globs, required and thresholds, and the file hash; no file contents', () => {
@@ -788,4 +856,60 @@ test('deploy record v2: a changed file two systems own equally is a config error
   git('add', '-A');
   git('commit', '-qm', 'three');
   assert.throws(() => deployRecord({ environment: 'production', root: dir }), { code: 'config', message: /src\/a\/x matches the paths of a and b equally/ });
+});
+
+test('deploy record v2: a config-only change (paths, rename, removal, comment) gives one record without a system', () => {
+  const { dir, git } = gitRepo();
+  const yml = join(dir, '.complyd', 'ai.yml');
+  const commit = (text, msg) => {
+    writeFileSync(yml, text);
+    git('commit', '-qam', msg);
+    return deployRecord({ environment: 'production', root: dir });
+  };
+  const base = [['a', ['src/**']], ['b', ['lib/**']]];
+  commit(sysYaml(base), 'two');
+  for (const [msg, text] of [
+    ['paths only', sysYaml([['a', ['new-src/**']], ['b', ['lib/**']]])],
+    ['rename', sysYaml([['a2', ['new-src/**']], ['b', ['lib/**']]])],
+    ['removal', sysYaml([['a2', ['new-src/**']]])],
+    ['comment only', '# a comment\n' + sysYaml([['a2', ['new-src/**']]])],
+  ]) {
+    const recs = commit(text, msg);
+    assert.equal(recs.length, 1, msg);
+    assert.deepEqual(Object.keys(recs[0]), ['environment', 'commit', 'previous_commit', 'recorded_at', 'config_changed', 'changes', 'repo_config'], msg);
+    assert.equal(recs[0].config_changed, true, msg);
+    assert.deepEqual(recs[0].changes, [], msg);
+    assert.deepEqual(recs[0].repo_config, repoConfig(parseConfig(text)), msg);
+  }
+  // A config change beside an owned file: that system's record carries it, no extra record.
+  mkdirSync(join(dir, 'new-src'));
+  writeFileSync(join(dir, 'new-src', 'x'), 'x\n');
+  git('add', '-A');
+  const recs = commit(sysYaml([['a2', ['new-src/**', 'more/**']]]), 'owned file and config');
+  assert.deepEqual(recs.map((r) => [r.system, r.config_changed]), [['a2', true]]);
+});
+
+test('deploy record v2: an AI file two systems name records only for its owner (the overlap winner)', () => {
+  const { dir, git } = gitRepo();
+  const both = '    model:\n      files: [src/p]\n';
+  mkdirSync(join(dir, 'src', 'private'), { recursive: true });
+  writeFileSync(join(dir, 'src', 'p'), 'one\n');
+  writeFileSync(join(dir, '.complyd', 'ai.yml'), sysYaml([['a', ['src/**'], both], ['b', ['src/private/**'], both]]));
+  git('add', '-A');
+  git('commit', '-qm', 'two');
+  writeFileSync(join(dir, 'src', 'p'), 'two\n');
+  git('commit', '-qam', 'three');
+  const recs = deployRecord({ environment: 'production', root: dir });
+  assert.deepEqual(recs.map((r) => [r.system, r.changes.map((c) => c.kind)]), [['a', ['model']]]);
+});
+
+test('CLI deploy record: a repo_config over the 64 KiB cap is an error naming it, not a cut record', async () => {
+  const { dir, git } = gitRepo();
+  const long = (i, j) => `services/s${i}/` + 'd'.repeat(170) + `/p${j}/**`;
+  writeFileSync(join(dir, '.complyd', 'ai.yml'), sysYaml([0, 1, 2, 3, 4].map((i) => [`s${i}`, Array.from({ length: 100 }, (_, j) => long(i, j))])));
+  git('commit', '-qam', 'two');
+  const r = await cli(['deploy', 'record', '--environment', 'production', '--workspace', dir, '--dry-run']);
+  assert.equal(r.code, 1, r.out.join('\n'));
+  assert.equal(r.out.join(''), '');
+  assert.match(r.err.join('\n'), /repo_config \(the summary of .complyd\/ai.yml: \d+ bytes\) doesn't fit Complyd's 64 KiB request/);
 });

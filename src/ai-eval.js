@@ -369,7 +369,11 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
   };
 }
 
-/** The envelope's bytes under the route's cap: trailing suites go first and the run is marked truncated. */
+/**
+ * The envelope's bytes under the route's cap: trailing suites go first and
+ * the run is marked truncated. repo_config is never cut: when it (or the one
+ * suite left) can't fit, an error names it.
+ */
 function fitSuites(env) {
   let body = JSON.stringify(env);
   let n = env.payload.suites.length;
@@ -377,11 +381,21 @@ function fitSuites(env) {
     n -= 1;
     body = JSON.stringify({ ...env, payload: { ...env.payload, suites: env.payload.suites.slice(0, n), truncated: true } });
   }
+  if (Buffer.byteLength(body) > MAX_BODY_BYTES) throw overCap({ ...env, payload: { ...env.payload, suites: [] } }, 'payload.suites[0]');
   return body;
+}
+
+/** The error for an envelope over the cap: repo_config's fault when `bare` (the envelope without the cuttable part) is over too, else `field`'s. */
+function overCap(bare, field) {
+  const size = Buffer.byteLength(JSON.stringify(bare.payload.repo_config ?? null));
+  if (Buffer.byteLength(JSON.stringify(bare)) > MAX_BODY_BYTES) {
+    return new ActionError('config', `repo_config (the summary of .complyd/ai.yml: ${size} bytes) doesn't fit Complyd's 64 KiB request: use fewer or shorter paths: globs, suites or metrics in .complyd/ai.yml.`);
+  }
+  return new ActionError('config', `${field} doesn't fit Complyd's 64 KiB request beside repo_config (${size} bytes): use fewer metrics, or fewer or shorter paths: globs in .complyd/ai.yml.`);
 }
 
 /** The envelope id for one results file of one run: a retry is a duplicate, baseline and candidate are two. */
 const aiEnvelopeId = (runKey, role, format, input) =>
   `${runKey}-ai_eval-${createHash('sha256').update(`${role}\n${format}\n${input}`).digest('hex').slice(0, 8)}`;
 
-module.exports = { PARSERS, FORMATS, ROLES, buildPayload, fitSuites, aiEnvelopeId, decimal, providerModel };
+module.exports = { PARSERS, FORMATS, ROLES, buildPayload, fitSuites, overCap, aiEnvelopeId, decimal, providerModel };

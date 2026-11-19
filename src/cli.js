@@ -5,9 +5,9 @@ const { parseArgs } = require('util');
 const { createHash, randomUUID } = require('crypto');
 const { execFileSync } = require('child_process');
 const { ActionError } = require('./reduce');
-const { oidcToken, allowedApiUrl, audienceAllowed, envelope } = require('./post');
+const { oidcToken, allowedApiUrl, audienceAllowed, envelope, MAX_BODY_BYTES } = require('./post');
 const { scan, scanAi, aiSummary, summary, droppedLine, errorLine, escape } = require('./scan');
-const { FORMATS, ROLES } = require('./ai-eval');
+const { FORMATS, ROLES, overCap } = require('./ai-eval');
 const { deployRecord } = require('./ai-release');
 const { DEFAULT_CONFIG } = require('./ai-config');
 const { version } = require('../package.json');
@@ -319,8 +319,12 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
       const root = first(values.workspace) ?? process.cwd();
       const now = deps.now ?? (() => new Date());
       const rec = deployRecord({ environment: values.environment, system: values.system, root, configPath: values['suite-config'], now, warn: (w) => err(`warning: ${w}`) });
-      const wrap = (payload) =>
-        envelope(payload, { id: `ci-${randomUUID().replace(/-/g, '')}-ai_release`, subject: first(values.repo) ?? 'dry-run', observedAt: payload.recorded_at, schema: 'ai_release', collector: 'complyd_ai_release' });
+      const wrap = (payload) => {
+        const env = envelope(payload, { id: `ci-${randomUUID().replace(/-/g, '')}-ai_release`, subject: first(values.repo) ?? 'dry-run', observedAt: payload.recorded_at, schema: 'ai_release', collector: 'complyd_ai_release' });
+        // The same 64 KiB cap as a sent scan, repo_config included.
+        if (Buffer.byteLength(JSON.stringify(env)) > MAX_BODY_BYTES) throw overCap({ ...env, payload: { ...payload, changes: [] } }, 'payload.changes');
+        return env;
+      };
       // A version 2 config gives one record per touched system: a list, maybe empty.
       if (Array.isArray(rec) && !rec.length) err('warning: this commit touches no AI system listed in the AI config: no deploy record.');
       print(JSON.stringify(Array.isArray(rec) ? rec.map(wrap) : wrap(rec), null, 2));

@@ -75,7 +75,8 @@ function validate(doc) {
     const segs = n.split('/');
     if (n.startsWith('/') || segs.some((x) => x === '' || x === '.' || x === '..')) return bad(where, `"${g}" must be relative to the repository root, without "..", "." or "//"`);
     if (segs.some((x) => x.includes('**') && x !== '**')) return bad(where, `"${g}": ** must be a whole path part, e.g. "src/**/*.py"`);
-    return n;
+    // "**/**" matches what "**" does: one spelling, so equal globs compare equal.
+    return segs.filter((x, i) => x !== '**' || segs[i - 1] !== '**').join('/');
   };
 
   /** One system's settings (v1: the whole file); `p` prefixes each error's place. */
@@ -203,7 +204,10 @@ function validate(doc) {
               known(m, `${mw}.`, ['gte', 'lte', 'category']);
               if (m.gte !== undefined && m.lte !== undefined) bad(mw, 'set gte: or lte:, not both');
               const dir = m.gte !== undefined ? 'gte' : m.lte !== undefined ? 'lte' : null;
-              if (dir && (typeof m[dir] !== 'number' || !Number.isFinite(m[dir]))) bad(`${mw}.${dir}`, 'set a number, e.g. 0.95');
+              // Sent as a decimal of at most 12 integer and 9 fraction digits: refuse what that would change.
+              if (dir && (typeof m[dir] !== 'number' || decimal(m[dir]) === undefined || Number(decimal(m[dir])) !== m[dir])) {
+                bad(`${mw}.${dir}`, 'set a number below 1000000000000 with at most 9 decimal places, e.g. 0.95');
+              }
               suite.metrics[name] = {
                 threshold: dir ? { value: m[dir], direction: dir } : undefined,
                 category: str(m.category, `${mw}.category`, METRIC, 'unsafe_compliance'),
@@ -281,26 +285,38 @@ function parseConfig(text) {
   return { ...validate(doc), sha256: sha256(text) };
 }
 
-const globs = new Map();
-/** A glob (as validated) as an anchored RegExp, built once per glob. */
-function globRegExp(g) {
-  if (!globs.has(g)) globs.set(g, toRegExp(g));
-  return globs.get(g);
-}
-function toRegExp(g) {
-  const segs = g.split('/');
-  const re = segs
-    .map((x, i) => {
-      if (x === '**') return i === segs.length - 1 ? '.*' : '(?:[^/]*/)*';
-      const part = x.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]');
-      return i === segs.length - 1 ? part : `${part}/`;
-    })
-    .join('');
-  return new RegExp(`^${re}$`);
+/**
+ * Wildcard match of `pat` against `items` in O(pat × items) steps: `star`
+ * matches any run of items, every other token one item that `one` accepts.
+ * Only the last star is ever backtracked to, so no input can blow it up
+ * (a backtracking RegExp can: "*a*a…b" against "aaaa…").
+ */
+function wild(pat, items, star, one) {
+  let p = 0;
+  let i = 0;
+  let starP = -1;
+  let starI = 0;
+  while (i < items.length) {
+    if (p < pat.length && pat[p] === star) [starP, starI] = [p++, i];
+    else if (p < pat.length && one(pat[p], items[i])) [p, i] = [p + 1, i + 1];
+    else if (starP >= 0) [p, i] = [starP + 1, ++starI];
+    else return false;
+  }
+  while (p < pat.length && pat[p] === star) p += 1;
+  return p === pat.length;
 }
 
-/** How specific a glob is: its characters other than * and ?. */
-const specificity = (g) => g.replace(/[*?]/g, '').length;
+/** Whether repository file `file` matches glob `g` (as validated): * within a path part, ** across parts, ? one character. */
+function globMatch(g, file) {
+  const segs = g.split('/');
+  // A trailing ** is a directory's contents: at least one more part.
+  if (segs[segs.length - 1] === '**') segs.splice(-1, 1, '*', '**');
+  const part = (x, name) => wild(x, name, '*', (c, ch) => c === '?' || c === ch);
+  return wild(segs, file.split('/'), '**', part);
+}
+
+/** How specific a glob is: its literal characters (not *, ? or /), so extra ** parts add nothing. */
+const specificity = (g) => g.replace(/[*?/]/g, '').length;
 
 /**
  * The system a repository file belongs to: the one whose matching glob is
@@ -310,7 +326,7 @@ function ownerOf(cfg, file) {
   let best = -1;
   let owners = [];
   for (const s of cfg.systems) {
-    const n = Math.max(-1, ...s.paths.filter((g) => globRegExp(g).test(file)).map(specificity));
+    const n = Math.max(-1, ...s.paths.filter((g) => globMatch(g, file)).map(specificity));
     if (n > best) [best, owners] = [n, [s]];
     else if (n === best && n >= 0) owners.push(s);
   }
@@ -412,4 +428,4 @@ function hashFiles(root, files, where, cache) {
   return sha256(list.map((p) => `${hashFile(root, p, where, cache)}  ${p}\n`).join(''));
 }
 
-module.exports = { parseConfig, loadConfig, validate, repoConfig, ownerOf, globRegExp, decimal, hashFile, hashFiles, sha256, isModelId, isJudge, DEFAULT_CONFIG, NAME, REF, PROVIDER, MODEL_ID, MODEL_VERSION, METRIC };
+module.exports = { parseConfig, loadConfig, validate, repoConfig, ownerOf, globMatch, decimal, hashFile, hashFiles, sha256, isModelId, isJudge, DEFAULT_CONFIG, NAME, REF, PROVIDER, MODEL_ID, MODEL_VERSION, METRIC };
