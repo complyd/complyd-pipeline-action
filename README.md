@@ -577,12 +577,19 @@ systems:
 
 - `paths:` globs are relative to the repository root, without `..`: `*`
   matches within a directory, `**` any number of directories (as a whole
-  path part, e.g. `src/**/*.py`), `?` one character. With a single system
-  `paths:` may be left out (it owns `**`); with several it is required.
-- A file matched by two systems belongs to the one whose glob is more
-  specific (has more characters other than `*` and `?`). A tie is a config
-  error: the same glob in two systems fails validation, and a changed file
-  that two systems match equally fails `deploy record`.
+  path part, e.g. `src/**/*.py`; `**/**` is the same as `**`), `?` one
+  character. With a single system `paths:` may be left out (it owns `**`);
+  with several it is required.
+- A file matched by two systems belongs to the one whose matching glob is
+  more specific: has more literal characters (not `*`, `?` or `/`), so
+  `services/support/**` beats `services/**`, and extra `**` parts add
+  nothing. A tie is a config error: the same glob in two systems (after
+  `**/**` becomes `**`) fails validation, and a changed file that two
+  systems match equally fails `deploy record`.
+- Keep each system's AI files (prompts, model config, datasets, …) under
+  its own `paths:`: `deploy record` gives a changed file to its owner only.
+- A threshold (`gte:`/`lte:`) is a number below 1000000000000 with at most 9
+  decimal places, as Complyd stores it; anything else is a config error.
 - System names and suite names are unique across the file: a results suite
   is matched against every system's suites. Errors name the entry, e.g.
   `systems[1].paths: list the globs of the files that belong to this system`.
@@ -705,9 +712,12 @@ The record also says whether `.complyd/ai.yml` itself changed
 (`config_changed`) and carries `repo_config`. No file content is in the
 record, and no path other than the globs under `paths:`.
 
-With a version 2 file it prints a list: one record per system the commit
-touches, that is a changed file its `paths:` own, or a change in the files
-it names. A commit that touches none prints `[]` with a warning.
+With a version 2 file it prints a list: one record per system that owns a
+changed file (the owner of a file two systems match, see above). When
+`.complyd/ai.yml` changed (paths, a renamed or removed system, even a
+comment) and no system owns a changed file, the list is one record without
+`system`, with no `changes`, carrying `config_changed: true` and the new
+`repo_config`. A commit that touches none prints `[]` with a warning.
 `--system` picks one system from the file (its record is printed even when
 the commit doesn't touch it). It needs the parent commit
 (`actions/checkout` `fetch-depth: 2`, GitLab `GIT_DEPTH: 2`). **Sending it
@@ -768,7 +778,10 @@ the file's version and SHA-256, and per system its name, its `paths:` globs
 and its suites' names, `required:` flags and metric thresholds (as decimal
 strings). Nothing else from the file and no file's contents: Complyd uses it
 to place changes and to propose an eval plan, which you still approve in
-Complyd.
+Complyd. It is never cut: when it doesn't fit Complyd's 64 KiB request
+(beside one suite, or a deploy record's changes), the run fails with an
+error naming `repo_config`; shorten `paths:` or the suites in
+`.complyd/ai.yml`.
 
 ```json
 {

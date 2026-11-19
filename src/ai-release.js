@@ -100,7 +100,9 @@ function digest(entries) {
  * files between HEAD's parent and HEAD, as kinds and before/after hashes.
  * Each commit's files are read under that commit's own .complyd/ai.yml.
  * Returns one record for a version 1 config; for version 2 a list, one per
- * system the commit touches (its paths or its AI files), or just `system`'s.
+ * system owning a changed file (or just `system`'s), plus, when
+ * .complyd/ai.yml changed and no system's record would carry that, one record
+ * without a system.
  */
 function deployRecord({ environment, system, root = process.cwd(), configPath = DEFAULT_CONFIG, now = () => new Date(), warn = () => {} }) {
   if (!ENVIRONMENT.test(environment ?? '')) throw new ActionError('usage', 'Set --environment to the environment name (letters, digits and . _ -), e.g. production.');
@@ -159,13 +161,13 @@ function deployRecord({ environment, system, root = process.cwd(), configPath = 
     throw new ActionError('usage', `--system: ${configPath} lists no system "${system}" (it lists ${cfg.systems.map((s) => s.system).join(', ')}).`);
   }
   const files = git(root, ['diff', '--name-only', '--no-renames', '--relative', '-z', prev, head]).toString('utf8').split('\0').filter(Boolean);
+  // A changed file belongs to its owner only (the overlap winner), AI files included.
   const hit = new Set(files.map((f) => ownerOf(cfg, f)).filter(Boolean));
-  const records = [];
-  for (const s of cfg.systems) {
-    if (system !== undefined && s.system !== system) continue;
-    const changes = changesOf(s);
-    if (system !== undefined || hit.has(s) || changes.length) records.push({ environment, system: s.system, ...common, changes, repo_config });
-  }
+  const records = cfg.systems
+    .filter((s) => (system !== undefined ? s.system === system : hit.has(s)))
+    .map((s) => ({ environment, system: s.system, ...common, changes: changesOf(s), repo_config }));
+  // A config change no system's record carries (mapping, rename, removal, comment): one record without a system.
+  if (!records.length && common.config_changed) records.push({ environment, ...common, changes: [], repo_config });
   return records;
 }
 
