@@ -23,5 +23,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "yaml": "^2.9.1"
   }
 }
