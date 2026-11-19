@@ -26,7 +26,7 @@ outputs: see [AI release](#ai-release).
    **Complyd CI scan** (the name Complyd lists this tool's scans under), and
    enter the repository's owner id and repository id
    (`gh api repos/OWNER/REPO --jq '.owner.id, .id'`) and its default branch.
-2. Copy the **trust id** (`trw_…`) and **audience** it shows.
+2. Copy the **trust id** (`trw_…`) it shows.
 3. Add the action after your scanner step, on the default branch:
 
 ```yaml
@@ -63,9 +63,12 @@ jobs:
         uses: complyd/complyd-pipeline-action@<v1.1.0 commit SHA> # v1.1.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000 # your trust id
-          audience: https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000 # its audience
           results: osv-results.json
 ```
+
+The action signs in for the audience `https://api.complyd.ai/observations/<trust>`,
+the one Complyd gives a new trust. If Complyd shows the trust with a different
+audience (a rotated trust keeps its old one), add it: `audience: <as shown>`.
 
 Any scanner that writes SARIF works too (Trivy: `format: sarif`; Grype:
 `output-format: sarif`): point `results` at its file. The readers are tested
@@ -161,7 +164,6 @@ send both, one step each. A repository with CodeQL for JavaScript and Python:
         uses: complyd/complyd-pipeline-action@<v1.1.0 commit SHA> # v1.1.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000
-          audience: https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
           scan: sast
           results: codeql-results # the directory: every language is sent together
 ```

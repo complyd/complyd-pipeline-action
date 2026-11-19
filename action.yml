@@ -9,8 +9,8 @@ inputs:
     description: The workload trust id from Complyd (Settings › Workload trusts), trw_…
     required: true
   audience:
-    description: The trust's audience, shown next to its id in Complyd.
-    required: true
+    description: The trust's audience, shown next to its id in Complyd. Defaults to https://api.complyd.ai/observations/<trust> (on the api-url host if set); set it only if Complyd shows a different one, e.g. for a rotated trust.
+    required: false
   results:
     description: Path of the scanner's output file (SARIF 2.1.0 or OSV-Scanner JSON). For scan sast, SARIF only, and a directory of .sarif files or one path per line is merged into one scan. Set this or `input`.
     required: false
@@ -34,7 +34,7 @@ inputs:
     required: false
     default: .complyd/ai.yml
   api-url:
-    description: For testing only. Complyd's address (https://api.complyd.ai or https://api-dev.complyd.ai); defaults to the audience's origin and must be on the audience's host.
+    description: For testing only. Complyd's address (https://api.complyd.ai or https://api-dev.complyd.ai); defaults to the audience's origin (else https://api.complyd.ai) and must be on the audience's host.
     required: false
 outputs:
   observation:
