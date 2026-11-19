@@ -1,0 +1,33 @@
+# Fixture: the repo/ fixture as two AI systems (.complyd/ai.yml version 2).
+version: 2
+systems:
+  - system: support-assistant
+    paths: ["services/support/**", "prompts/**", "config/llm.yaml"]
+    model:
+      files: [config/llm.yaml]
+      keys: [model, model_version]
+    prompts: [prompts/support.txt]
+    safety:
+      markers: { start: "<!-- safety:start -->", end: "<!-- safety:end -->" }
+    datasets:
+      refusals:
+        path: evals/data/refusals.jsonl
+        ref: datasets/refusals@3
+    suites:
+      - name: safety-refusals
+        required: true
+        dataset: refusals
+        test_set: { version: "4", selection: curated }
+        metrics:
+          pass_rate: { gte: 0.9, category: unsafe_compliance }
+          latency_p95_ms: {}
+  - system: AIS-0042
+    paths: ["services/**"]
+    prompts: [evals/rubric.md]
+    tools: [config/tools.json]
+    suites:
+      - name: ranking-quality
+        test_set: { version: "2" }
+        metrics:
+          ndcg: { gte: 0.75 }
+          toxicity: { lte: 0.01 }

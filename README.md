@@ -483,7 +483,9 @@ only: a metric is sent only when its name is listed under the suite's
 `metrics:` in `.complyd/ai.yml` (`pass_rate` always), and a model or judge id
 that looks like a URL or a local path is left out. The tests check that no
 prompt, output, case or metric-name text from the fixtures reaches what is
-sent. Run with `--dry-run` to see exactly what would be sent.
+sent. Beside the suites, each run carries `repo_config`, a summary of
+`.complyd/ai.yml` (see [What Complyd receives](#what-complyd-receives)).
+Run with `--dry-run` to see exactly what would be sent.
 
 The tool's own suite labels (a promptfoo prompt label can be the prompt's
 text) are used only to find the suite in `.complyd/ai.yml` and are never
@@ -537,6 +539,53 @@ each problem and what to change, e.g. `suites[0].test_set.version: set the
 test set version (or a dataset:, whose hash then names it)`. Each suite needs
 prompt files and a test set version (or a dataset). The file is read by a
 strict YAML reader: anchors, tags and `|` / `>` text blocks are refused.
+
+#### Version 2: several AI systems in one repository
+
+When a repository holds more than one AI system, list them under `systems:`.
+Each entry takes the same keys as a version 1 file (`model:`, `prompts:`,
+`safety:`, `datasets:`, `retrieval:`, `tools:`, `product_config:`,
+`eval_method:`, `suites:`), plus `system:` (required) and `paths:`, the globs
+of the files that belong to it. Version 1 files keep working unchanged: they
+are one system that owns the whole repository.
+
+```yaml
+version: 2
+systems:
+  - system: support-assistant          # the AI system's name or its AIS-… reference
+    paths: ["services/support/**", "prompts/support/**"]
+    model:
+      files: [services/support/llm.yaml]
+      keys: [model]
+    prompts: [prompts/support/system.txt]
+    suites:
+      - name: safety-refusals
+        required: true
+        test_set: { version: "4" }
+        metrics:
+          pass_rate: { gte: 0.95 }
+  - system: search-ranker
+    paths: ["services/**"]               # services/support/ stays with support-assistant: more specific
+    prompts: [services/search/rerank.txt]
+    suites:
+      - name: ranking-quality
+        test_set: { version: "2" }
+        metrics:
+          ndcg: { gte: 0.75 }
+          toxicity: { lte: 0.01 }
+```
+
+- `paths:` globs are relative to the repository root, without `..`: `*`
+  matches within a directory, `**` any number of directories (as a whole
+  path part, e.g. `src/**/*.py`), `?` one character. With a single system
+  `paths:` may be left out (it owns `**`); with several it is required.
+- A file matched by two systems belongs to the one whose glob is more
+  specific (has more characters other than `*` and `?`). A tie is a config
+  error: the same glob in two systems fails validation, and a changed file
+  that two systems match equally fails `deploy record`.
+- System names and suite names are unique across the file: a results suite
+  is matched against every system's suites. Errors name the entry, e.g.
+  `systems[1].paths: list the globs of the files that belong to this system`.
 
 How each suite is filled in:
 
@@ -652,7 +701,15 @@ parent and prints which kinds changed, each with a before and after
 SHA-256: `model`, `model_params`, `prompt`, `safety_prompt`, `eval_suite`
 (suite files and settings), `dataset`, `retrieval`, `tools`,
 `product_config` and `eval_method` (evaluator settings, rubrics, graders).
-No file content or path is in the record. It needs the parent commit
+The record also says whether `.complyd/ai.yml` itself changed
+(`config_changed`) and carries `repo_config`. No file content is in the
+record, and no path other than the globs under `paths:`.
+
+With a version 2 file it prints a list: one record per system the commit
+touches, that is a changed file its `paths:` own, or a change in the files
+it names. A commit that touches none prints `[]` with a warning.
+`--system` picks one system from the file (its record is printed even when
+the commit doesn't touch it). It needs the parent commit
 (`actions/checkout` `fetch-depth: 2`, GitLab `GIT_DEPTH: 2`). **Sending it
 to Complyd is coming soon**: today it runs only with `--dry-run`.
 
@@ -704,6 +761,36 @@ rename to Complyd pipeline. An AI eval run is sent as collector
 `complyd_ai_release` (Complyd lists it as **Complyd AI release**), schema
 `ai_eval` v1, one observation per results file and role
 (`<run id>-<run attempt>-ai_eval-<hash>`).
+
+An AI eval run and a deploy record also carry `repo_config`, what
+`.complyd/ai.yml` says about where each system lives and what it must pass:
+the file's version and SHA-256, and per system its name, its `paths:` globs
+and its suites' names, `required:` flags and metric thresholds (as decimal
+strings). Nothing else from the file and no file's contents: Complyd uses it
+to place changes and to propose an eval plan, which you still approve in
+Complyd.
+
+```json
+{
+  "version": 2,
+  "config_sha256": "<SHA-256 of .complyd/ai.yml>",
+  "systems": [
+    {
+      "system": "support-assistant",
+      "paths": ["services/support/**", "prompts/support/**"],
+      "suites": [{ "name": "safety-refusals", "required": true, "metrics": { "pass_rate": { "gte": "0.95" } } }]
+    },
+    {
+      "system": "search-ranker",
+      "paths": ["services/**"],
+      "suites": [{ "name": "ranking-quality", "required": false, "metrics": { "ndcg": { "gte": "0.75" }, "toxicity": { "lte": "0.01" } } }]
+    }
+  ]
+}
+```
+
+A version 1 file gives one system with `"paths": ["**"]` (and no `system`
+when the file has no `system:`).
 
 For a SAST scan, one observation per run (`<run id>-<run attempt>-sast_scan`):
 the same envelope, with each finding reduced to its rule id, severity and

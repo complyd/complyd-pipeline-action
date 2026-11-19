@@ -14,3 +14,5 @@ tool's documented results shape, with made-up values:
 Every prompt, input, output and case text in them contains `CANARY`: the
 tests check none of it reaches the envelope. `repo/` is a repository with a
 `.complyd/ai.yml` whose prompts, dataset and rubric the scan hashes.
+`ai.v2.yml` is the same repository's config as version 2, with two systems
+whose `paths:` overlap (`services/**` and `services/support/**`).
