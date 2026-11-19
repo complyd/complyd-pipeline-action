@@ -22,7 +22,7 @@ inputs:
     required: false
     default: dependencies
   format:
-    description: auto, sarif or osv (auto reads the file to tell). For scan ai_eval, the eval tool: promptfoo, deepeval, openai-evals, lm-eval or generic.
+    description: "auto, sarif or osv (auto reads the file to tell). For scan ai_eval, the eval tool: promptfoo, deepeval, openai-evals, lm-eval or generic."
     required: false
     default: auto
   role:
