@@ -151,6 +151,22 @@ test('refuses an unknown scan kind before asking for a token', async () => {
   assert.equal(calls.length, 0);
 });
 
+test('without audience, signs in for <api-url host>/observations/<trust>; an explicit audience (rotated trust) still wins', async () => {
+  for (const [over, aud, post] of [
+    [{ INPUT_AUDIENCE: '' }, AUDIENCE, 'https://api.complyd.ai/api/v1/observations'],
+    [{ INPUT_AUDIENCE: '', 'INPUT_API-URL': 'https://api-dev.complyd.ai' }, `https://api-dev.complyd.ai/observations/${TRUST}`, 'https://api-dev.complyd.ai/api/v1/observations'],
+    [{ INPUT_AUDIENCE: 'https://api.complyd.ai/observations/trw_old' }, 'https://api.complyd.ai/observations/trw_old', 'https://api.complyd.ai/api/v1/observations'],
+  ]) {
+    const { calls, fetchImpl } = stub();
+    await run(env(over), { fetchImpl });
+    assert.equal(calls[0].url.searchParams.get('audience'), aud, JSON.stringify(over));
+    assert.equal(calls[1].url.href, post);
+  }
+  const s = stub();
+  await assert.rejects(run(env({ INPUT_AUDIENCE: '', 'INPUT_API-URL': 'https://evil.example' }), s), /must be https:\/\/api.complyd.ai/);
+  assert.equal(s.calls.length, 0);
+});
+
 test('api-url must name the audience host: a production token never goes to the dev host, nor the reverse', async () => {
   const DEV = `https://api-dev.complyd.ai/observations/${TRUST}`;
   const { calls, fetchImpl } = stub();

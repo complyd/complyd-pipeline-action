@@ -19,7 +19,7 @@ const input = (env, name) => (env[`INPUT_${name.toUpperCase()}`] ?? '').trim();
  */
 async function run(env = process.env, { fetchImpl = fetch, now = () => new Date(), sleep } = {}) {
   const trust = input(env, 'trust');
-  const audience = input(env, 'audience');
+  let audience = input(env, 'audience');
   // `input` is the ai_eval spelling; either names the file.
   const results = input(env, 'results') || input(env, 'input');
   // `dependencies` is the CLI's word; `dependency` the 1.0 input, kept.
@@ -38,10 +38,12 @@ async function run(env = process.env, { fetchImpl = fetch, now = () => new Date(
   }
   let apiUrl;
   try {
-    apiUrl = new URL(input(env, 'api-url') || new URL(audience).origin);
+    apiUrl = new URL(input(env, 'api-url') || (audience ? new URL(audience).origin : 'https://api.complyd.ai'));
   } catch {
     throw new ActionError('input', "Set `audience` to the trust's audience from Complyd (https://…).");
   }
+  // A new trust's audience is <api>/observations/<trust>; a rotated trust keeps its old one, so `audience` still wins.
+  audience ||= new URL(`/observations/${trust}`, apiUrl).href;
   // Checked before the token is asked for: it only ever goes to Complyd over https.
   if (!allowedApiUrl(apiUrl) || !audienceAllowed(audience, apiUrl)) {
     throw new ActionError(
