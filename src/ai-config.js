@@ -12,7 +12,7 @@ const MAX_HASH_BYTES = 512 * 1024 * 1024;
 /** Largest .complyd/ai.yml read. */
 const MAX_CONFIG_BYTES = 256 * 1024;
 
-// The ai_eval v1 schema's patterns.
+// Complyd's ai_eval / ai_release schema patterns.
 const NAME = /^[A-Za-z0-9 ._:/@+-]{1,128}$/;
 const REF = /^[A-Za-z0-9._:/@+-]{1,64}$/;
 const DATASET_REF = /^[A-Za-z0-9._:/@+-]{1,200}$/;
@@ -83,16 +83,27 @@ function validate(doc) {
     return segs.filter((x, i) => x !== '**' || segs[i - 1] !== '**').join('/');
   };
 
+  /** { provider, id, version } of a model: map `m` at `where`. */
+  const modelRef = (m, where) => {
+    const provider = str(m.provider, `${where}.provider`, PROVIDER, 'openai');
+    let id = str(m.id, `${where}.id`, MODEL_ID, 'gpt-4o-mini');
+    if (id && !isModelId(id)) id = bad(`${where}.id`, 'set the model id, not a URL or a local path');
+    if (!provider || !id) bad(where, 'set both provider: (lower case, e.g. openai) and id:');
+    return { provider, id, version: str(m.version, `${where}.version`, MODEL_VERSION, '2024-07-18') };
+  };
+
   /** One system's settings (v1: the whole file); `p` prefixes each error's place. */
   function system(doc, p) {
     declared = [];
     const cfg = {};
     cfg.model = { files: [], keys: [] };
     if (doc.model !== undefined) {
-      if (!isMap(doc.model)) bad(`${p}model`, 'set files: (and optionally keys:)');
+      if (!isMap(doc.model)) bad(`${p}model`, 'set provider: and id: (the deployed model) and/or files: (and optionally keys:)');
       else {
-        known(doc.model, `${p}model.`, ['files', 'keys']);
+        known(doc.model, `${p}model.`, ['files', 'keys', 'provider', 'id', 'version']);
         cfg.model.files = paths(doc.model.files, `${p}model.files`);
+        // The deployed model, for deploy record (eval results name their own).
+        if (doc.model.provider !== undefined || doc.model.id !== undefined || doc.model.version !== undefined) cfg.model.ref = modelRef(doc.model, `${p}model`);
         if (doc.model.keys !== undefined) {
           if (!Array.isArray(doc.model.keys) || !doc.model.keys.every((k) => typeof k === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(k))) {
             bad(`${p}model.keys`, 'set it to a list of key names, e.g. [model, model_version]');
@@ -164,11 +175,7 @@ function validate(doc) {
           if (!isMap(m)) bad(`${where}.model`, 'set { provider: …, id: …, version: … }');
           else {
             known(m, `${where}.model.`, ['provider', 'id', 'version']);
-            const provider = str(m.provider, `${where}.model.provider`, PROVIDER, 'openai');
-            let id = str(m.id, `${where}.model.id`, MODEL_ID, 'gpt-4o-mini');
-            if (id && !isModelId(id)) id = bad(`${where}.model.id`, 'set the model id, not a URL or a local path');
-            if (!provider || !id) bad(`${where}.model`, 'set both provider: (lower case, e.g. openai) and id:');
-            suite.model = { provider, id, version: str(m.version, `${where}.model.version`, MODEL_VERSION, '2024-07-18') };
+            suite.model = modelRef(m, `${where}.model`);
           }
         }
         const t = s.test_set ?? {};

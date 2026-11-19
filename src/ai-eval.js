@@ -238,7 +238,7 @@ const meets = (v, t) => (t.direction === 'gte' ? v >= t.value : v <= t.value);
 const shown = (label, i) => (typeof label === 'string' && /^[A-Za-z0-9._:/@+-]{1,64}$/.test(label) ? `"${label}"` : `#${i + 1} (unnamed)`);
 
 /**
- * The parsed results + the config → ai_eval v1 payload. Each result suite
+ * The parsed results + the config → ai_eval v2 payload. Each result suite
  * is matched to a config suite by `match:` (else `name:`), or to the only
  * suite when there is one and the results carry one label. Only metrics the
  * suite declares under `metrics:` (and `pass_rate`) are sent. Warnings go to

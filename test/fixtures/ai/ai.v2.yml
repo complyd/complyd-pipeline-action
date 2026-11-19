@@ -4,6 +4,9 @@ systems:
   - system: support-assistant
     paths: ["services/support/**", "prompts/**", "config/llm.yaml", "evals/data/**"]
     model:
+      provider: openai
+      id: gpt-4o-mini
+      version: "2024-07-18"
       files: [config/llm.yaml]
       keys: [model, model_version]
     prompts: [prompts/support.txt]
@@ -23,6 +26,7 @@ systems:
           latency_p95_ms: {}
   - system: AIS-0042
     paths: ["services/**", "evals/rubric.md", "config/tools.json"]
+    model: { provider: hf, id: acme/rank-1 }
     prompts: [evals/rubric.md]
     tools: [config/tools.json]
     suites:

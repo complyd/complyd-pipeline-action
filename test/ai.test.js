@@ -14,6 +14,7 @@ const { envelope, MAX_BODY_BYTES } = require('../src/post');
 const { deployRecord, sections, splitModel } = require('../src/ai-release');
 const { main } = require('../src/cli');
 const { run } = require('../src/index');
+const { assertValid, errorsOf } = require('./schemas');
 
 const AI = join(__dirname, 'fixtures', 'ai');
 const REPO = join(AI, 'repo');
@@ -26,87 +27,10 @@ const config = () => parseConfig(readFileSync(join(REPO, '.complyd', 'ai.yml'), 
 const payloadOf = (format, role = 'candidate') =>
   buildPayload(PARSERS[format](fixture(format)), config(), { format, role, commit: SHA, runId: 'gitlab-555', ranAt: '2026-11-19T08:00:00.000Z', root: REPO });
 
-/** The ai_eval v1 schema's shape and patterns, checked by hand (the action has no JSON Schema validator). */
-function assertSchema(p) {
-  const keys = (o, req, opt = []) => {
-    for (const k of req) assert.ok(Object.hasOwn(o, k), `missing ${k}`);
-    for (const k of Object.keys(o)) assert.ok(req.includes(k) || opt.includes(k), `unexpected ${k}`);
-  };
-  const re = (v, r, what) => assert.match(String(v), r, what);
-  const count = (n) => assert.ok(Number.isInteger(n) && n >= 0 && n <= 10_000_000, `count ${n}`);
-  const HEX = /^[0-9a-f]{64}$/;
-  const REF = /^[A-Za-z0-9._:/@+-]{1,64}$/;
-  const DEC = /^-?[0-9]{1,12}(\.[0-9]{1,9})?$/;
-  keys(p, ['tool', 'format', 'commit', 'run_id', 'ran_at', 'suites', 'truncated'], ['repo_config']);
-  if (p.repo_config) assertRepoConfig(p.repo_config);
-  keys(p.tool, ['name', 'version']);
-  re(p.tool.name, /^[A-Za-z0-9 ._/@+-]{1,64}$/);
-  re(p.tool.version, /^[A-Za-z0-9._+-]{1,40}$/);
-  assert.ok(FORMATS.includes(p.format));
-  re(p.commit, /^([0-9a-f]{40}|[0-9a-f]{64})$/);
-  re(p.run_id, /^[A-Za-z0-9._:/-]{1,128}$/);
-  assert.equal(new Date(p.ran_at).toISOString(), p.ran_at);
-  assert.ok(p.suites.length >= 1 && p.suites.length <= 50);
-  assert.equal(typeof p.truncated, 'boolean');
-  for (const s of p.suites) {
-    keys(s, ['name', 'role', 'model', 'prompt_sha256', 'test_set', 'evaluator', 'metrics', 'cases', 'passed'], ['prompt_version', 'dataset', 'run_conditions_sha256', 'rescored', 'anchor_check']);
-    re(s.name, /^[A-Za-z0-9 ._:/@+-]{1,128}$/);
-    assert.ok(['baseline', 'candidate'].includes(s.role));
-    keys(s.model, ['provider', 'id'], ['version']);
-    re(s.model.provider, /^[a-z0-9][a-z0-9._-]{0,63}$/);
-    re(s.model.id, /^[A-Za-z0-9._:/@+-]{1,128}$/);
-    if (s.model.version) re(s.model.version, /^[A-Za-z0-9._:/@+-]{1,64}$/);
-    if (s.prompt_version) re(s.prompt_version, REF);
-    re(s.prompt_sha256, HEX);
-    if (s.dataset) {
-      keys(s.dataset, ['sha256'], ['ref']);
-      re(s.dataset.sha256, HEX);
-    }
-    keys(s.test_set, ['version', 'cases'], ['selection', 'expected_version']);
-    re(s.test_set.version, REF);
-    count(s.test_set.cases);
-    keys(s.evaluator, ['version', 'parser'], ['judge_model', 'rubric_sha256']);
-    re(s.evaluator.version, REF);
-    re(s.evaluator.parser, REF);
-    if (s.evaluator.rubric_sha256) re(s.evaluator.rubric_sha256, HEX);
-    assert.ok(s.metrics.length <= 50);
-    for (const m of s.metrics) {
-      keys(m, ['name', 'value', 'passed'], ['category', 'threshold']);
-      re(m.name, /^[A-Za-z0-9 ._:/@+-]{1,64}$/);
-      re(m.value, DEC);
-      if (m.threshold) {
-        keys(m.threshold, ['value', 'direction']);
-        re(m.threshold.value, DEC);
-        assert.ok(['gte', 'lte'].includes(m.threshold.direction));
-      }
-    }
-    keys(s.cases, ['total', 'passed', 'failed', 'errored']);
-    Object.values(s.cases).forEach(count);
-    assert.equal(typeof s.passed, 'boolean');
-  }
-}
-
+/** A valid ai_eval v2 payload (Complyd's schema file). */
+const assertSchema = (p) => assertValid('ai_eval.v2', p);
 /** repo_config: names, globs, required flags and decimal thresholds only. */
-function assertRepoConfig(r) {
-  const keys = (o, req, opt = []) => assert.deepEqual(Object.keys(o).filter((k) => !opt.includes(k)).sort(), [...req].sort());
-  keys(r, ['version', 'config_sha256', 'systems']);
-  assert.ok([1, 2].includes(r.version));
-  assert.match(r.config_sha256, /^[0-9a-f]{64}$/);
-  for (const s of r.systems) {
-    keys(s, ['paths', 'suites'], ['system']);
-    if (s.system !== undefined) assert.match(s.system, /^[A-Za-z0-9 ._:/@+-]{1,128}$/);
-    for (const g of s.paths) assert.match(g, /^[A-Za-z0-9 ._@+/*?-]{1,200}$/);
-    for (const x of s.suites) {
-      keys(x, ['name', 'required', 'metrics']);
-      assert.equal(typeof x.required, 'boolean');
-      for (const m of Object.values(x.metrics)) {
-        assert.equal(Object.keys(m).length, 1);
-        assert.ok(['gte', 'lte'].includes(Object.keys(m)[0]));
-        assert.match(Object.values(m)[0], /^-?[0-9]{1,12}(\.[0-9]{1,9})?$/);
-      }
-    }
-  }
-}
+const assertRepoConfig = (r) => assertValid('ai_eval.v2#/$defs/repo_config', r);
 
 test('yaml: the subset ai.yml uses', () => {
   const doc = parseYaml(`# c
@@ -325,7 +249,7 @@ test('CLI scan ai_eval --dry-run: prints the envelope, sends nothing, needs no s
   const env = JSON.parse(r.out.join('\n'));
   assert.equal(env.collector, 'complyd_ai_release');
   assert.equal(env.schema, 'ai_eval');
-  assert.equal(env.schema_version, 1);
+  assert.equal(env.schema_version, 2);
   assertSchema(env.payload);
 });
 
@@ -381,7 +305,7 @@ test('deploy record: kinds and before/after hashes against the previous commit',
   writeFileSync(join(dir, 'config', 'llm.yaml'), 'model: gpt-4o-mini\nmodel_version: 2024-07-18\ntemperature: 0.7\n');
   git('commit', '-qam', 'two');
   const rec = deployRecord({ environment: 'production', root: dir, now: () => new Date('2026-11-19T08:00:00Z') });
-  assert.equal(rec.system, 'support-assistant');
+  assert.equal(rec.system_hint, 'support-assistant');
   assert.equal(rec.commit.length, 40);
   assert.deepEqual(rec.changes.map((c) => c.kind), ['model_params', 'prompt', 'safety_prompt']);
   for (const c of rec.changes) {
@@ -402,7 +326,7 @@ test('deploy record: kinds and before/after hashes against the previous commit',
   const env = JSON.parse(r.out.join('\n'));
   assert.equal(env.schema, 'ai_release');
   assert.equal(env.collector, 'complyd_ai_release');
-  assert.equal(env.payload.system, 'support bot');
+  assert.equal(env.payload.system_hint, 'support bot');
   assert.deepEqual(env.payload.changes.map((c) => c.kind), ['model', 'eval_suite', 'dataset']);
 
   // No change at all: an empty list.
@@ -410,7 +334,7 @@ test('deploy record: kinds and before/after hashes against the previous commit',
   assert.deepEqual(deployRecord({ environment: 'production', root: dir }).changes, []);
 });
 
-test('deploy record: a kind added since the previous commit has a null before', () => {
+test('deploy record: a kind added since the previous commit has no before', () => {
   const { dir, git } = gitRepo();
   const yml = join(dir, '.complyd', 'ai.yml');
   mkdirSync(join(dir, 'rag'));
@@ -419,7 +343,8 @@ test('deploy record: a kind added since the previous commit has a null before', 
   git('add', '-A');
   git('commit', '-qm', 'two');
   const rec = deployRecord({ environment: 'production', root: dir });
-  assert.deepEqual(rec.changes, [{ kind: 'retrieval', before_sha256: null, after_sha256: rec.changes[0].after_sha256 }]);
+  assert.deepEqual(rec.changes, [{ kind: 'retrieval', after_sha256: rec.changes[0].after_sha256 }]);
+  assert.equal(rec.retrieval_sha256, rec.changes[0].after_sha256);
 });
 
 test('safety sections and model keys', () => {
@@ -579,6 +504,8 @@ test('generic: non-string ids are not models and do not crash', () => {
 /* .complyd/ai.yml version 2: several systems, each with the paths it owns. */
 
 const V2 = join(AI, 'ai.v2.yml');
+/** A deploy record's keys without system_hint and the optional layer hashes. */
+const RELEASE_KEYS = ['commit', 'environment', 'released_at', 'changes', 'model', 'tools', 'datasets', 'eval_run_ids', 'config_changed', 'repo_config'];
 const v2 = () => parseConfig(readFileSync(V2));
 
 test('config v2: systems with paths; suites listed across systems; v1 is one system owning **', () => {
@@ -646,7 +573,7 @@ test('globs: * stays in a directory, ** spans any, ? is one character; the most 
 /** A v2 config of the given systems: [name, paths, extra yaml lines]; each also owns and declares prompts/<name>.txt. */
 const sysYaml = (list) =>
   'version: 2\nsystems:\n' +
-  list.map(([name, paths, extra = '']) => `  - system: ${name}\n    paths: ${JSON.stringify([...paths, `prompts/${name}.txt`])}\n    prompts: [prompts/${name}.txt]\n${extra}    suites:\n      - name: ${name}-s\n        test_set: { version: "1" }\n`).join('');
+  list.map(([name, paths, extra = '']) => `  - system: ${name}\n    paths: ${JSON.stringify([...paths, `prompts/${name}.txt`])}\n    model: { provider: example-ai, id: m1 }\n    prompts: [prompts/${name}.txt]\n${extra}    suites:\n      - name: ${name}-s\n        test_set: { version: "1" }\n`).join('');
 
 test('globs: matching is linear, whatever the glob and path (no backtracking blow-up)', () => {
   const probe = (glob, file) => {
@@ -792,36 +719,36 @@ test('deploy record v2: one record per touched system, chosen by paths and AI fi
   git('add', '-A');
   git('commit', '-qm', 'two: v1 to v2');
   const recs = deployRecord({ environment: 'production', root: dir, now: () => new Date('2026-11-19T08:00:00Z') });
-  assert.deepEqual(recs.map((r) => r.system), ['support-assistant', 'AIS-0042']);
+  assert.deepEqual(recs.map((r) => r.system_hint), ['support-assistant', 'AIS-0042']);
   for (const r of recs) {
     assert.equal(r.config_changed, true);
-    assert.deepEqual(Object.keys(r), ['environment', 'system', 'commit', 'previous_commit', 'recorded_at', 'config_changed', 'changes', 'repo_config']);
+    assert.deepEqual(Object.keys(r).filter((k) => !k.endsWith('_sha256')).sort(), [...RELEASE_KEYS, 'system_hint'].sort());
     assert.deepEqual(r.repo_config, repoConfig(v2()));
   }
   // support-assistant kept its name across v1 → v2: compared with the v1 file's material (its tools moved to AIS-0042).
-  assert.deepEqual(recs[0].changes.map((c) => [c.kind, c.before_sha256 !== null, c.after_sha256 !== null]), [
+  assert.deepEqual(recs[0].changes.map((c) => [c.kind, 'before_sha256' in c, 'after_sha256' in c]), [
     ['eval_suite', true, true],
     ['tools', true, false],
     ['eval_method', true, true],
   ]);
   // AIS-0042 is new: every kind it has is new.
-  assert.deepEqual(recs[1].changes.map((c) => [c.kind, c.before_sha256]), [['prompt', null], ['eval_suite', null], ['tools', null], ['eval_method', null]]);
+  assert.deepEqual(recs[1].changes.map((c) => [c.kind, 'before_sha256' in c]), [['model', false], ['prompt', false], ['eval_suite', false], ['tools', false], ['eval_method', false]]);
 
   // Only services/search/: AIS-0042 (services/**), nothing changed in its AI files.
   put('services/search/rank.py', 'two\n');
   git('commit', '-qam', 'three');
-  assert.deepEqual(deployRecord({ environment: 'production', root: dir }).map((r) => [r.system, r.config_changed, r.changes]), [['AIS-0042', false, []]]);
+  assert.deepEqual(deployRecord({ environment: 'production', root: dir }).map((r) => [r.system_hint, r.config_changed, r.changes]), [['AIS-0042', false, []]]);
 
   // services/support/ is in both globs: the more specific one (support-assistant) owns it.
   put('services/support/handler.py', 'two\n');
   git('commit', '-qam', 'four');
-  assert.deepEqual(deployRecord({ environment: 'production', root: dir }).map((r) => r.system), ['support-assistant']);
+  assert.deepEqual(deployRecord({ environment: 'production', root: dir }).map((r) => r.system_hint), ['support-assistant']);
 
   // A prompt edit: support-assistant, with its prompt kinds.
   writeFileSync(join(dir, 'prompts', 'support.txt'), 'CANARY new prompt\n');
   git('commit', '-qam', 'five');
   const five = deployRecord({ environment: 'production', root: dir });
-  assert.deepEqual(five.map((r) => [r.system, r.changes.map((c) => c.kind)]), [['support-assistant', ['prompt', 'safety_prompt']]]);
+  assert.deepEqual(five.map((r) => [r.system_hint, r.changes.map((c) => c.kind)]), [['support-assistant', ['prompt', 'safety_prompt']]]);
   assert.doesNotMatch(JSON.stringify(five), /CANARY|new prompt/);
 
   // Nothing of any system: no record, and the CLI says so; --system asks for one anyway.
@@ -838,7 +765,7 @@ test('deploy record v2: one record per touched system, chosen by paths and AI fi
   const envs = JSON.parse(one.out.join('\n'));
   assert.equal(envs.length, 1);
   assert.equal(envs[0].schema, 'ai_release');
-  assert.equal(envs[0].payload.system, 'AIS-0042');
+  assert.equal(envs[0].payload.system_hint, 'AIS-0042');
   assert.deepEqual(envs[0].payload.changes, []);
   const unknown = await cli(['deploy', 'record', '--environment', 'production', '--workspace', dir, '--system', 'nope', '--dry-run']);
   assert.equal(unknown.code, 2);
@@ -876,7 +803,8 @@ test('deploy record v2: a config-only change (paths, rename, removal, comment) g
   ]) {
     const recs = commit(text, msg);
     assert.equal(recs.length, 1, msg);
-    assert.deepEqual(Object.keys(recs[0]), ['environment', 'commit', 'previous_commit', 'recorded_at', 'config_changed', 'changes', 'repo_config'], msg);
+    assert.deepEqual(Object.keys(recs[0]).sort(), [...RELEASE_KEYS].sort(), msg);
+    assert.deepEqual(recs[0].model, { provider: 'none', id: 'none' }, msg);
     assert.equal(recs[0].config_changed, true, msg);
     assert.deepEqual(recs[0].changes, [], msg);
     assert.deepEqual(recs[0].repo_config, repoConfig(parseConfig(text)), msg);
@@ -886,7 +814,7 @@ test('deploy record v2: a config-only change (paths, rename, removal, comment) g
   writeFileSync(join(dir, 'new-src', 'x'), 'x\n');
   git('add', '-A');
   const recs = commit(sysYaml([['a2', ['new-src/**', 'more/**']]]), 'owned file and config');
-  assert.deepEqual(recs.map((r) => [r.system, r.config_changed]), [['a2', true]]);
+  assert.deepEqual(recs.map((r) => [r.system_hint, r.config_changed]), [['a2', true]]);
 });
 
 test('config v2: every file a system declares must be its own (under its paths, not won by a more specific glob)', () => {
@@ -932,4 +860,73 @@ test('CLI deploy record: a repo_config over the 64 KiB cap is an error naming it
   assert.equal(r.code, 1, r.out.join('\n'));
   assert.equal(r.out.join(''), '');
   assert.match(r.err.join('\n'), /repo_config \(the summary of .complyd\/ai.yml: \d+ bytes\) doesn't fit Complyd's 64 KiB request/);
+});
+
+test("Complyd's schemas: every dry-run deploy record and ai_eval envelope is valid v2 (test/fixtures/schemas)", async () => {
+  // ai_eval: every format's results.
+  for (const format of FORMATS) {
+    const r = await cli(['scan', 'ai_eval', '--format', format, '--input', join(AI, `${format}.json`), '--workspace', REPO, '--commit', SHA, '--dry-run']);
+    assert.equal(r.code, 0, r.err.join('\n'));
+    const env = JSON.parse(r.out.join('\n'));
+    assert.deepEqual([env.schema, env.schema_version], ['ai_eval', 2], format);
+    assertValid('ai_eval.v2', env.payload);
+  }
+
+  // Deploy record, v1 config: model and dataset changed, a retrieval file added (a kind with no before).
+  const { dir, git } = gitRepo();
+  const yml = join(dir, '.complyd', 'ai.yml');
+  mkdirSync(join(dir, 'rag'));
+  writeFileSync(join(dir, 'rag', 'index.yaml'), 'top_k: 5\n');
+  writeFileSync(yml, readFileSync(yml, 'utf8').replace('id: gpt-4o-mini', 'id: gpt-4o').replace('tools: [config/tools.json]', 'tools: [config/tools.json]\nretrieval: [rag/index.yaml]'));
+  writeFileSync(join(dir, 'evals', 'data', 'refusals.jsonl'), '{"input":"CANARY-2"}\n');
+  git('add', '-A');
+  git('commit', '-qm', 'two');
+  const deploy = async (...args) => {
+    const r = await cli(['deploy', 'record', '--environment', 'production', '--workspace', dir, '--dry-run', ...args]);
+    assert.equal(r.code, 0, r.err.join('\n'));
+    const out = JSON.parse(r.out.join('\n'));
+    for (const env of [out].flat()) {
+      assert.deepEqual([env.schema, env.schema_version, env.observed_at], ['ai_release', 2, env.payload.released_at]);
+      assertValid('ai_release.v2', env.payload);
+    }
+    return out;
+  };
+  const one = (await deploy()).payload;
+  assert.deepEqual(one.model, { provider: 'openai', id: 'gpt-4o', version: '2024-07-18' });
+  assert.equal(one.system_hint, 'support-assistant');
+  assert.equal(one.released_at, '2026-11-19T08:00:00.000Z');
+  assert.deepEqual(one.datasets, [{ ref: 'datasets/refusals@3', sha256: sha('{"input":"CANARY-2"}\n') }]);
+  assert.deepEqual([one.tools, one.eval_run_ids], [[], []]);
+  const retrieval = one.changes.find((c) => c.kind === 'retrieval');
+  assert.deepEqual(retrieval, { kind: 'retrieval', after_sha256: one.retrieval_sha256 });
+  assert.ok(one.changes.some((c) => c.kind === 'model'));
+  for (const k of ['params_sha256', 'prompt_sha256', 'safety_sha256', 'evaluator_sha256']) assert.match(one[k], /^[0-9a-f]{64}$/, k);
+  assert.doesNotMatch(JSON.stringify(one), /CANARY/);
+
+  // v2 config: one record per system, and a config-only record (no system, Complyd ignores its model).
+  cpSync(V2, yml);
+  git('commit', '-qam', 'three');
+  const [only] = await deploy();
+  assert.equal(Object.hasOwn(only.payload, 'system_hint'), false);
+  assert.equal(only.payload.config_changed, true);
+  writeFileSync(join(dir, 'prompts', 'support.txt'), 'CANARY new prompt\n');
+  git('commit', '-qam', 'four');
+  assert.deepEqual((await deploy()).map((e) => [e.payload.system_hint, e.payload.model.id]), [['support-assistant', 'gpt-4o-mini']]);
+  assert.deepEqual((await deploy('--system', 'AIS-0042')).map((e) => [e.payload.system_hint, e.payload.model.id]), [['AIS-0042', 'acme/rank-1']]);
+
+  // The validator is not vacuous: the record's old shape is refused.
+  const old = { ...one, system: 'x', previous_commit: one.commit, changes: [{ kind: 'prompt', before_sha256: null }] };
+  assert.ok(errorsOf('ai_release.v2', old).length);
+  const { model, ...noModel } = one;
+  assert.ok(errorsOf('ai_release.v2', noModel));
+});
+
+test('deploy record: a system without the deployed model is a config error naming where to set it', () => {
+  const { dir, git } = gitRepo();
+  const yml = join(dir, '.complyd', 'ai.yml');
+  writeFileSync(yml, readFileSync(yml, 'utf8').replace(/  provider: openai.*\n  id: gpt-4o-mini\n  version: "2024-07-18"\n/, ''));
+  git('commit', '-qam', 'two');
+  assert.throws(() => deployRecord({ environment: 'production', root: dir }), { code: 'config', message: /model: deploy record needs the deployed model: set provider: and id:/ });
+  // A model in the config is validated as a suite's is.
+  assert.throws(() => parseConfig(readFileSync(yml, 'utf8').replace('model:\n', 'model:\n  provider: OpenAI\n  id: https://x/y\n')), { code: 'config', message: /model\.provider: .*model\.id: set the model id, not a URL/ });
 });
