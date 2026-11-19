@@ -60,7 +60,7 @@ jobs:
             ./
       - name: Send the dependency scan to Complyd
         # Pin the release commit (see Releases); @v1 follows every v1.x.y.
-        uses: complyd/complyd-pipeline-action@<v1.1.0 commit SHA> # v1.1.0
+        uses: complyd/complyd-pipeline-action@<v1.2.0 commit SHA> # v1.2.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000 # your trust id
           results: osv-results.json
@@ -161,7 +161,7 @@ send both, one step each. A repository with CodeQL for JavaScript and Python:
         with:
           output: codeql-results # one SARIF file per language: javascript.sarif, python.sarif
       - name: Send the SAST scan to Complyd
-        uses: complyd/complyd-pipeline-action@<v1.1.0 commit SHA> # v1.1.0
+        uses: complyd/complyd-pipeline-action@<v1.2.0 commit SHA> # v1.2.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000
           scan: sast
