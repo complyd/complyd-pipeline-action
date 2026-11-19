@@ -30,7 +30,8 @@ an AI eval run's results (ai_eval v1: hashes, counts and metric values only).
                         (deploy record: required; sending it is coming soon)
   --environment <env>   deploy record: where this deploy goes, e.g. production
   --system <name>       deploy record: the AI system's name (default: system: in
-                        the AI config)
+                        the AI config; version 2: one record per system the
+                        commit touches, or only this system's)
   --repo <subject>      Complyd's repository id. Default: github:<repository id>
                         on GitHub, gitlab-oidc:<host>/<project id> on GitLab,
                         bitbucket-oidc:<repository uuid> on Bitbucket; required
@@ -317,9 +318,12 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
     if (kind === 'deploy') {
       const root = first(values.workspace) ?? process.cwd();
       const now = deps.now ?? (() => new Date());
-      const payload = deployRecord({ environment: values.environment, system: values.system, root, configPath: values['suite-config'], now, warn: (w) => err(`warning: ${w}`) });
-      const id = `ci-${randomUUID().replace(/-/g, '')}-ai_release`;
-      print(JSON.stringify(envelope(payload, { id, subject: first(values.repo) ?? 'dry-run', observedAt: payload.recorded_at, schema: 'ai_release', collector: 'complyd_ai_release' }), null, 2));
+      const rec = deployRecord({ environment: values.environment, system: values.system, root, configPath: values['suite-config'], now, warn: (w) => err(`warning: ${w}`) });
+      const wrap = (payload) =>
+        envelope(payload, { id: `ci-${randomUUID().replace(/-/g, '')}-ai_release`, subject: first(values.repo) ?? 'dry-run', observedAt: payload.recorded_at, schema: 'ai_release', collector: 'complyd_ai_release' });
+      // A version 2 config gives one record per touched system: a list, maybe empty.
+      if (Array.isArray(rec) && !rec.length) err('warning: this commit touches no AI system listed in the AI config: no deploy record.');
+      print(JSON.stringify(Array.isArray(rec) ? rec.map(wrap) : wrap(rec), null, 2));
       return 0;
     }
     if (kind === 'ai_eval') {

@@ -2,7 +2,7 @@
 
 const { createHash } = require('crypto');
 const { ActionError } = require('./reduce');
-const { hashFile, hashFiles, isModelId, isJudge, PROVIDER, MODEL_VERSION } = require('./ai-config');
+const { hashFile, hashFiles, isModelId, isJudge, repoConfig, decimal, PROVIDER, MODEL_VERSION } = require('./ai-config');
 const { MAX_BODY_BYTES } = require('./post');
 
 const FORMATS = ['promptfoo', 'deepeval', 'openai-evals', 'lm-eval', 'generic'];
@@ -232,16 +232,6 @@ function generic(doc) {
 
 const PARSERS = { promptfoo, deepeval, 'openai-evals': openaiEvals, 'lm-eval': lmEval, generic };
 
-/** A number as the schema's decimal string (≤ 12 integer and 9 fraction digits), else undefined. */
-function decimal(n) {
-  if (typeof n !== 'number' || !Number.isFinite(n) || Math.abs(n) >= 1e12) return undefined;
-  const s = n
-    .toFixed(9)
-    .replace(/(\.\d*?)0+$/, '$1')
-    .replace(/\.$/, '');
-  return s === '-0' ? '0' : s;
-}
-
 const meets = (v, t) => (t.direction === 'gte' ? v >= t.value : v <= t.value);
 
 /** A suite label safe to print (a promptfoo label may be the prompt's own text, so no spaces). */
@@ -277,14 +267,14 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
       return;
     }
     covered.add(c.name);
-    const where = `suites[${c.index}]`;
+    const where = `${c.prefix}suites[${c.index}]`;
     const model = c.model ?? t.model;
     if (!model) {
       errors.push(`${where}.model: the results don't name the model (provider and id): set model: { provider: …, id: … }`);
       return;
     }
-    const dataset = c.dataset ? { ...cfg.datasets[c.dataset] } : undefined;
-    const datasetSha = dataset && hashFile(root, dataset.path, `datasets.${c.dataset}.path`, hashes);
+    const dataset = c.dataset ? { ...c.datasetDef } : undefined;
+    const datasetSha = dataset && hashFile(root, dataset.path, `${c.prefix}datasets.${c.dataset}.path`, hashes);
     let judge = c.evaluator.judge_model;
     if (!judge && t.judge !== undefined) {
       if (isJudge(t.judge)) judge = t.judge;
@@ -363,7 +353,9 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
     });
   });
   if (errors.length) throw new ActionError('config', errors.slice(0, 5).join('; ') + '.');
-  for (const s of cfg.suites) if (s.required && !covered.has(s.name)) warn(`Required suite ${s.name} isn't in these results.`);
+  // Only for the systems these results are about (v2 lists several).
+  const about = new Set(cfg.suites.filter((s) => covered.has(s.name)).map((s) => s.prefix));
+  for (const s of cfg.suites) if (s.required && about.has(s.prefix) && !covered.has(s.name)) warn(`Required suite ${s.name} isn't in these results.`);
   if (warned > MAX_WARNINGS) sink(`${warned - MAX_WARNINGS} more warnings not shown.`);
   return {
     tool: parsed.tool,
@@ -373,6 +365,7 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
     ran_at: parsed.ranAt ?? ranAt,
     suites,
     truncated,
+    repo_config: repoConfig(cfg),
   };
 }
 

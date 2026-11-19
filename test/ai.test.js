@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 const { mkdtempSync, writeFileSync, readFileSync, mkdirSync, cpSync, symlinkSync } = require('fs');
 const { tmpdir } = require('os');
 const { parseYaml } = require('../src/yaml');
-const { parseConfig, loadConfig, hashFiles } = require('../src/ai-config');
+const { parseConfig, loadConfig, hashFiles, repoConfig, ownerOf, globRegExp } = require('../src/ai-config');
 const { PARSERS, FORMATS, buildPayload, decimal, providerModel, aiEnvelopeId } = require('../src/ai-eval');
 const { deployRecord, sections, splitModel } = require('../src/ai-release');
 const { main } = require('../src/cli');
@@ -36,7 +36,8 @@ function assertSchema(p) {
   const HEX = /^[0-9a-f]{64}$/;
   const REF = /^[A-Za-z0-9._:/@+-]{1,64}$/;
   const DEC = /^-?[0-9]{1,12}(\.[0-9]{1,9})?$/;
-  keys(p, ['tool', 'format', 'commit', 'run_id', 'ran_at', 'suites', 'truncated']);
+  keys(p, ['tool', 'format', 'commit', 'run_id', 'ran_at', 'suites', 'truncated'], ['repo_config']);
+  if (p.repo_config) assertRepoConfig(p.repo_config);
   keys(p.tool, ['name', 'version']);
   re(p.tool.name, /^[A-Za-z0-9 ._/@+-]{1,64}$/);
   re(p.tool.version, /^[A-Za-z0-9._+-]{1,40}$/);
@@ -81,6 +82,28 @@ function assertSchema(p) {
     keys(s.cases, ['total', 'passed', 'failed', 'errored']);
     Object.values(s.cases).forEach(count);
     assert.equal(typeof s.passed, 'boolean');
+  }
+}
+
+/** repo_config: names, globs, required flags and decimal thresholds only. */
+function assertRepoConfig(r) {
+  const keys = (o, req, opt = []) => assert.deepEqual(Object.keys(o).filter((k) => !opt.includes(k)).sort(), [...req].sort());
+  keys(r, ['version', 'config_sha256', 'systems']);
+  assert.ok([1, 2].includes(r.version));
+  assert.match(r.config_sha256, /^[0-9a-f]{64}$/);
+  for (const s of r.systems) {
+    keys(s, ['paths', 'suites'], ['system']);
+    if (s.system !== undefined) assert.match(s.system, /^[A-Za-z0-9 ._:/@+-]{1,128}$/);
+    for (const g of s.paths) assert.match(g, /^[A-Za-z0-9 ._@+/*?-]{1,200}$/);
+    for (const x of s.suites) {
+      keys(x, ['name', 'required', 'metrics']);
+      assert.equal(typeof x.required, 'boolean');
+      for (const m of Object.values(x.metrics)) {
+        assert.equal(Object.keys(m).length, 1);
+        assert.ok(['gte', 'lte'].includes(Object.keys(m)[0]));
+        assert.match(Object.values(m)[0], /^-?[0-9]{1,12}(\.[0-9]{1,9})?$/);
+      }
+    }
   }
 }
 
@@ -550,4 +573,219 @@ test('generic: non-string ids are not models and do not crash', () => {
   for (const model of [{ provider: ['acme'], id: [['CANARY-arr']] }, { provider: { toString: 1 }, id: 'x' }]) {
     assert.throws(() => build('generic', { suites: [{ name: 's1', model, cases: { total: 1, passed: 1 } }] }), { code: 'config', message: /set model:/ });
   }
+});
+
+/* .complyd/ai.yml version 2: several systems, each with the paths it owns. */
+
+const V2 = join(AI, 'ai.v2.yml');
+const v2 = () => parseConfig(readFileSync(V2));
+
+test('config v2: systems with paths; suites listed across systems; v1 is one system owning **', () => {
+  const cfg = v2();
+  assert.equal(cfg.version, 2);
+  assert.deepEqual(cfg.systems.map((s) => [s.system, s.paths]), [
+    ['support-assistant', ['services/support/**', 'prompts/**', 'config/llm.yaml']],
+    ['AIS-0042', ['services/**']],
+  ]);
+  assert.deepEqual(cfg.suites.map((s) => s.name), ['safety-refusals', 'ranking-quality']);
+  assert.equal(cfg.systems[1].model.files.length, 0);
+  assert.deepEqual(cfg.systems[1].prompts, ['evals/rubric.md']);
+  const one = config();
+  assert.equal(one.version, 1);
+  assert.equal(one.systems.length, 1);
+  assert.deepEqual(one.systems[0].paths, ['**']);
+  // One system may leave paths: out (it owns the repository).
+  assert.deepEqual(parseConfig('version: 2\nsystems:\n  - system: a\n    prompts: [p]\n    suites:\n      - name: s\n        test_set: { version: "1" }').systems[0].paths, ['**']);
+});
+
+test('config v2: errors name the system entry and say what to fix', () => {
+  const sys = (name, extra = '') => `  - system: ${name}\n${extra}    prompts: [p]\n    suites:\n      - name: ${name}-s\n        test_set: { version: "1" }\n`;
+  for (const [text, message] of [
+    ['version: 2', /systems: list your AI systems \(1 to 50\)/],
+    ['version: 2\nsystems: []', /systems: list your AI systems/],
+    ['version: 2\nsuites: []\nsystems:\n' + sys('a'), /suites: unknown key \(expected one of version, systems\)/],
+    ['version: 3\nprompts: [p]\nsuites:\n  - name: a', /version: set version: 1 \(or version: 2 with systems:\)/],
+    ['version: 1\nsystems: []', /systems: unknown key/],
+    ['version: 1\npaths: ["**"]\nprompts: [p]\nsuites:\n  - name: a', /paths: unknown key/],
+    ['version: 2\nsystems:\n  - prompts: [p]\n    suites:\n      - name: a\n        test_set: { version: "1" }', /systems\[0\].system: set the system's name or its AIS-… reference/],
+    ['version: 2\nsystems:\n' + sys('a', '    paths: [x/**]\n') + sys('a', '    paths: [y/**]\n'), /systems\[1\].system: "a" is also systems\[0\]/],
+    ['version: 2\nsystems:\n' + sys('a') + sys('b', '    paths: [y/**]\n'), /systems\[0\].paths: list the globs of the files that belong to this system/],
+    ['version: 2\nsystems:\n' + sys('a', '    paths: [../x/**]\n'), /systems\[0\].paths\[0\]: "..\/x\/\*\*" must be relative/],
+    ['version: 2\nsystems:\n' + sys('a', '    paths: [/etc/**]\n'), /must be relative/],
+    ['version: 2\nsystems:\n' + sys('a', '    paths: ["src/**.py"]\n'), /\*\* must be a whole path part/],
+    ['version: 2\nsystems:\n' + sys('a', '    paths: ["src/{a,b}/*"]\n'), /systems\[0\].paths\[0\]: set a glob of letters/],
+    ['version: 2\nsystems:\n' + sys('a', '    paths: [x/**]\n') + sys('b', '    paths: [./x/**]\n'), /systems\[1\].paths: "x\/\*\*" is also in systems\[0\].paths/],
+    ['version: 2\nsystems:\n' + sys('a', '    paths: [x/**]\n    promts: [q]\n'), /systems\[0\].promts: unknown key/],
+    ['version: 2\nsystems:\n' + sys('a', '    paths: [x/**]\n') + sys('b', '    paths: [y/**]\n').replace('b-s', 'a-s'), /systems\[1\].suites\[0\].name: "a-s" is used by two suites \(suite names are unique across systems\)/],
+    ['version: 2\nsystems:\n  - system: a\n    suites:\n      - name: s\n        test_set: { version: "1" }', /systems\[0\].suites\[0\].prompts: list the prompt files/],
+  ]) {
+    assert.throws(() => parseConfig(text), { code: 'config', message }, text);
+  }
+});
+
+test('globs: * stays in a directory, ** spans any, ? is one character; the most specific glob owns a file; a tie is an error', () => {
+  const t = (g, f) => globRegExp(g).test(f);
+  assert.ok(t('src/**/*.py', 'src/a.py') && t('src/**/*.py', 'src/a/b/c.py'));
+  assert.ok(!t('src/**/*.py', 'srcx/a.py') && !t('src/*.py', 'src/a/b.py'));
+  assert.ok(t('**', 'any/file') && t('a/**', 'a/b/c') && !t('a/**', 'ab/c'));
+  assert.ok(t('a/b?.txt', 'a/b1.txt') && !t('a/b?.txt', 'a/b/.txt') && !t('a.b', 'axb'));
+  const cfg = v2();
+  const owner = (f) => ownerOf(cfg, f)?.system;
+  assert.equal(owner('services/support/handler.py'), 'support-assistant');
+  assert.equal(owner('services/search/rank.py'), 'AIS-0042');
+  assert.equal(owner('prompts/support.txt'), 'support-assistant');
+  assert.equal(owner('README.md'), undefined);
+  const tie = parseConfig(
+    'version: 2\nsystems:\n  - system: a\n    paths: ["src/*/x"]\n    prompts: [p]\n    suites:\n      - name: s1\n        test_set: { version: "1" }\n  - system: b\n    paths: ["src/a/*"]\n    prompts: [p]\n    suites:\n      - name: s2\n        test_set: { version: "1" }',
+  );
+  assert.equal(ownerOf(tie, 'src/b/x').system, 'a');
+  assert.throws(() => ownerOf(tie, 'src/a/x'), { code: 'config', message: /src\/a\/x matches the paths of a and b equally: make one of their globs more specific/ });
+});
+
+test('repo_config: names, globs, required and thresholds, and the file hash; no file contents', () => {
+  const r = repoConfig(v2());
+  assert.deepEqual(r, {
+    version: 2,
+    config_sha256: sha(readFileSync(V2)),
+    systems: [
+      {
+        system: 'support-assistant',
+        paths: ['services/support/**', 'prompts/**', 'config/llm.yaml'],
+        suites: [{ name: 'safety-refusals', required: true, metrics: { pass_rate: { gte: '0.9' } } }],
+      },
+      {
+        system: 'AIS-0042',
+        paths: ['services/**'],
+        suites: [{ name: 'ranking-quality', required: false, metrics: { ndcg: { gte: '0.75' }, toxicity: { lte: '0.01' } } }],
+      },
+    ],
+  });
+  assertRepoConfig(r);
+  const one = repoConfig(config());
+  assert.equal(one.version, 1);
+  assert.equal(one.config_sha256, sha(readFileSync(join(REPO, '.complyd', 'ai.yml'))));
+  assert.deepEqual(one.systems.map((s) => [s.system, s.paths, s.suites.map((x) => x.name)]), [['support-assistant', ['**'], ['safety-refusals', 'answer-quality', 'hellaswag']]]);
+  // No system: in a v1 file: the entry has none (Complyd falls back to its own mapping).
+  assert.equal(Object.hasOwn(repoConfig(parseConfig(ONE)).systems[0], 'system'), false);
+});
+
+test('scan ai_eval with a v2 config: suites matched across systems; repo_config sent; required warnings only for the results system', () => {
+  const warnings = [];
+  const p = buildPayload(PARSERS.generic(fixture('generic')), v2(), { format: 'generic', role: 'candidate', commit: SHA, runId: 'x', ranAt: '2026-11-19T08:00:00.000Z', root: REPO, warn: (w) => warnings.push(w) });
+  assertSchema(p);
+  assert.equal(p.suites[0].name, 'safety-refusals');
+  assert.equal(p.suites[0].dataset.sha256, sha(readFileSync(join(REPO, 'evals', 'data', 'refusals.jsonl'))));
+  assert.deepEqual(p.repo_config, repoConfig(v2()));
+  assert.ok(!warnings.some((w) => /Required suite/.test(w)), warnings.join('\n'));
+  // A v2 error names the system entry.
+  const broken = readFileSync(V2, 'utf8').replace('path: evals/data/refusals.jsonl', 'path: evals/data/missing.jsonl');
+  assert.throws(() => buildPayload(PARSERS.generic(fixture('generic')), parseConfig(broken), { format: 'generic', role: 'candidate', commit: SHA, runId: 'x', ranAt: 'x', root: REPO }), {
+    message: /systems\[0\].datasets.refusals.path: couldn't read evals\/data\/missing.jsonl/,
+  });
+});
+
+test('CLI scan ai_eval --dry-run with a v2 config prints repo_config', async () => {
+  const { dir } = gitRepo();
+  cpSync(V2, join(dir, '.complyd', 'ai.yml'));
+  const r = await cli(['scan', 'ai_eval', '--format', 'generic', '--input', join(AI, 'generic.json'), '--workspace', dir, '--commit', SHA, '--dry-run']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  const env = JSON.parse(r.out.join('\n'));
+  assertSchema(env.payload);
+  assert.equal(env.payload.repo_config.version, 2);
+  assert.doesNotMatch(r.out.join('\n'), /CANARY|safety:start|refusals\.jsonl/);
+});
+
+test('deploy record v1: config_changed and repo_config', () => {
+  const { dir, git } = gitRepo();
+  writeFileSync(join(dir, 'prompts', 'support.txt'), 'CANARY changed prompt\n');
+  git('commit', '-qam', 'two');
+  const rec = deployRecord({ environment: 'production', root: dir });
+  assert.equal(rec.config_changed, false);
+  assert.deepEqual(rec.repo_config, repoConfig(config()));
+  const yml = join(dir, '.complyd', 'ai.yml');
+  writeFileSync(yml, readFileSync(yml, 'utf8').replace('gte: 0.9,', 'gte: 0.95,'));
+  git('commit', '-qam', 'three');
+  const next = deployRecord({ environment: 'production', root: dir });
+  assert.equal(next.config_changed, true);
+  assert.deepEqual(next.repo_config.systems[0].suites[0].metrics, { pass_rate: { gte: '0.95' } });
+  assert.notEqual(next.repo_config.config_sha256, rec.repo_config.config_sha256);
+  assert.doesNotMatch(JSON.stringify([rec, next]), /CANARY/);
+});
+
+test('deploy record v2: one record per touched system, chosen by paths and AI files', async () => {
+  const { dir, git } = gitRepo();
+  const put = (f, text) => {
+    mkdirSync(join(dir, f, '..'), { recursive: true });
+    writeFileSync(join(dir, f), text);
+  };
+  put('services/support/handler.py', 'one\n');
+  put('services/search/rank.py', 'one\n');
+  cpSync(V2, join(dir, '.complyd', 'ai.yml'));
+  git('add', '-A');
+  git('commit', '-qm', 'two: v1 to v2');
+  const recs = deployRecord({ environment: 'production', root: dir, now: () => new Date('2026-11-19T08:00:00Z') });
+  assert.deepEqual(recs.map((r) => r.system), ['support-assistant', 'AIS-0042']);
+  for (const r of recs) {
+    assert.equal(r.config_changed, true);
+    assert.deepEqual(Object.keys(r), ['environment', 'system', 'commit', 'previous_commit', 'recorded_at', 'config_changed', 'changes', 'repo_config']);
+    assert.deepEqual(r.repo_config, repoConfig(v2()));
+  }
+  // support-assistant kept its name across v1 → v2: compared with the v1 file's material (its tools moved to AIS-0042).
+  assert.deepEqual(recs[0].changes.map((c) => [c.kind, c.before_sha256 !== null, c.after_sha256 !== null]), [
+    ['eval_suite', true, true],
+    ['tools', true, false],
+    ['eval_method', true, true],
+  ]);
+  // AIS-0042 is new: every kind it has is new.
+  assert.deepEqual(recs[1].changes.map((c) => [c.kind, c.before_sha256]), [['prompt', null], ['eval_suite', null], ['tools', null], ['eval_method', null]]);
+
+  // Only services/search/: AIS-0042 (services/**), nothing changed in its AI files.
+  put('services/search/rank.py', 'two\n');
+  git('commit', '-qam', 'three');
+  assert.deepEqual(deployRecord({ environment: 'production', root: dir }).map((r) => [r.system, r.config_changed, r.changes]), [['AIS-0042', false, []]]);
+
+  // services/support/ is in both globs: the more specific one (support-assistant) owns it.
+  put('services/support/handler.py', 'two\n');
+  git('commit', '-qam', 'four');
+  assert.deepEqual(deployRecord({ environment: 'production', root: dir }).map((r) => r.system), ['support-assistant']);
+
+  // A prompt edit: support-assistant, with its prompt kinds.
+  writeFileSync(join(dir, 'prompts', 'support.txt'), 'CANARY new prompt\n');
+  git('commit', '-qam', 'five');
+  const five = deployRecord({ environment: 'production', root: dir });
+  assert.deepEqual(five.map((r) => [r.system, r.changes.map((c) => c.kind)]), [['support-assistant', ['prompt', 'safety_prompt']]]);
+  assert.doesNotMatch(JSON.stringify(five), /CANARY|new prompt/);
+
+  // Nothing of any system: no record, and the CLI says so; --system asks for one anyway.
+  put('README.md', 'docs\n');
+  git('add', '-A');
+  git('commit', '-qm', 'six');
+  assert.deepEqual(deployRecord({ environment: 'production', root: dir }), []);
+  const r = await cli(['deploy', 'record', '--environment', 'production', '--workspace', dir, '--dry-run']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.deepEqual(JSON.parse(r.out.join('\n')), []);
+  assert.match(r.err[0], /touches no AI system/);
+  const one = await cli(['deploy', 'record', '--environment', 'production', '--workspace', dir, '--system', 'AIS-0042', '--dry-run']);
+  assert.equal(one.code, 0, one.err.join('\n'));
+  const envs = JSON.parse(one.out.join('\n'));
+  assert.equal(envs.length, 1);
+  assert.equal(envs[0].schema, 'ai_release');
+  assert.equal(envs[0].payload.system, 'AIS-0042');
+  assert.deepEqual(envs[0].payload.changes, []);
+  const unknown = await cli(['deploy', 'record', '--environment', 'production', '--workspace', dir, '--system', 'nope', '--dry-run']);
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.err[0], /lists no system "nope" \(it lists support-assistant, AIS-0042\)/);
+});
+
+test('deploy record v2: a changed file two systems own equally is a config error', () => {
+  const { dir, git } = gitRepo();
+  const yml =
+    'version: 2\nsystems:\n  - system: a\n    paths: ["src/*/x"]\n    prompts: [prompts/support.txt]\n    suites:\n      - name: s1\n        test_set: { version: "1" }\n  - system: b\n    paths: ["src/a/*"]\n    prompts: [prompts/support.txt]\n    suites:\n      - name: s2\n        test_set: { version: "1" }\n';
+  writeFileSync(join(dir, '.complyd', 'ai.yml'), yml);
+  git('commit', '-qam', 'two');
+  mkdirSync(join(dir, 'src', 'a'), { recursive: true });
+  writeFileSync(join(dir, 'src', 'a', 'x'), 'x\n');
+  git('add', '-A');
+  git('commit', '-qm', 'three');
+  assert.throws(() => deployRecord({ environment: 'production', root: dir }), { code: 'config', message: /src\/a\/x matches the paths of a and b equally/ });
 });
