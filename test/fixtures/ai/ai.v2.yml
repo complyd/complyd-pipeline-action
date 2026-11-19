@@ -2,7 +2,7 @@
 version: 2
 systems:
   - system: support-assistant
-    paths: ["services/support/**", "prompts/**", "config/llm.yaml"]
+    paths: ["services/support/**", "prompts/**", "config/llm.yaml", "evals/data/**"]
     model:
       files: [config/llm.yaml]
       keys: [model, model_version]
@@ -22,7 +22,7 @@ systems:
           pass_rate: { gte: 0.9, category: unsafe_compliance }
           latency_p95_ms: {}
   - system: AIS-0042
-    paths: ["services/**"]
+    paths: ["services/**", "evals/rubric.md", "config/tools.json"]
     prompts: [evals/rubric.md]
     tools: [config/tools.json]
     suites:

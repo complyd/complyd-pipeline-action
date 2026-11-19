@@ -47,13 +47,17 @@ function validate(doc) {
   const known = (obj, where, keys) => {
     for (const k of Object.keys(obj)) if (!keys.includes(k)) bad(`${where}${k}`, `unknown key (expected one of ${keys.join(', ')})`);
   };
+  /** The files the system being read declares, as { file, where }. */
+  let declared = [];
   // Paths are repository-relative (no '..'); symlinks out of the repository are refused when read (insideFile).
   const path = (p, where) => {
     if (typeof p !== 'string' || !p.trim()) return bad(where, 'set it to a file path relative to the repository root');
     if (p.startsWith('/') || /^[A-Za-z]:/.test(p) || p.split(/[\\/]/).includes('..')) {
       return bad(where, `"${p}" must be relative to the repository root, without ".."`);
     }
-    return p.replace(/^\.\//, '');
+    const file = p.replace(/^\.\//, '');
+    declared.push({ file, where });
+    return file;
   };
   const paths = (v, where) => {
     if (v === undefined || v === null) return [];
@@ -81,6 +85,7 @@ function validate(doc) {
 
   /** One system's settings (v1: the whole file); `p` prefixes each error's place. */
   function system(doc, p) {
+    declared = [];
     const cfg = {};
     cfg.model = { files: [], keys: [] };
     if (doc.model !== undefined) {
@@ -235,11 +240,13 @@ function validate(doc) {
     const systems = [];
     const seen = new Map();
     const globs = new Map();
+    const files = [];
     list.forEach((d, i) => {
       const p = `systems[${i}].`;
       if (!isMap(d)) return bad(`systems[${i}]`, 'expected system:, paths: and the system settings');
       known(d, p, ['system', 'paths', ...SYSTEM_KEYS]);
       const cfg = system(d, p);
+      files.push(declared);
       cfg.system = str(d.system, `${p}system`, NAME, 'support-assistant');
       if (!cfg.system) bad(`${p}system`, "set the system's name or its AIS-… reference");
       else if (seen.has(cfg.system)) bad(`${p}system`, `"${cfg.system}" is also systems[${seen.get(cfg.system)}]`);
@@ -259,6 +266,16 @@ function validate(doc) {
       systems.push(cfg);
     });
     out = { version: 2, systems, suites: systems.flatMap((s) => s.suites) };
+    // A declared file the system doesn't own would never be recorded (deploy record gives a file to its owner only).
+    if (!errors.length) {
+      systems.forEach((cfg, i) => {
+        for (const { file, where } of files[i]) {
+          const o = owners(out, file);
+          if (o.length > 1) bad(where, `${file} matches the paths of ${o.map((s) => s.system).join(' and ')} equally: make one of their globs more specific`);
+          else if (o[0] !== cfg) bad(where, `${file} is not under this system's paths${o.length ? ` (it belongs to ${o[0].system}: a more specific glob)` : ''} (add it to paths: or move it)`);
+        }
+      });
+    }
   } else {
     known(doc, '', ['version', 'system', ...SYSTEM_KEYS]);
     if (doc.version !== 1) bad('version', 'set version: 1 (or version: 2 with systems:)');
@@ -318,22 +335,28 @@ function globMatch(g, file) {
 /** How specific a glob is: its literal characters (not *, ? or /), so extra ** parts add nothing. */
 const specificity = (g) => g.replace(/[*?/]/g, '').length;
 
+/** The systems whose matching glob for `file` is the most specific: none, the owner, or several (a tie). */
+function owners(cfg, file) {
+  let best = -1;
+  let found = [];
+  for (const s of cfg.systems) {
+    const n = Math.max(-1, ...s.paths.filter((g) => globMatch(g, file)).map(specificity));
+    if (n > best) [best, found] = [n, [s]];
+    else if (n === best && n >= 0) found.push(s);
+  }
+  return found;
+}
+
 /**
  * The system a repository file belongs to: the one whose matching glob is
  * the most specific; undefined when none matches. A tie is a config error.
  */
 function ownerOf(cfg, file) {
-  let best = -1;
-  let owners = [];
-  for (const s of cfg.systems) {
-    const n = Math.max(-1, ...s.paths.filter((g) => globMatch(g, file)).map(specificity));
-    if (n > best) [best, owners] = [n, [s]];
-    else if (n === best && n >= 0) owners.push(s);
+  const found = owners(cfg, file);
+  if (found.length > 1) {
+    throw new ActionError('config', `Fix .complyd/ai.yml: ${file} matches the paths of ${found.map((s) => s.system).join(' and ')} equally: make one of their globs more specific.`);
   }
-  if (owners.length > 1) {
-    throw new ActionError('config', `Fix .complyd/ai.yml: ${file} matches the paths of ${owners.map((s) => s.system).join(' and ')} equally: make one of their globs more specific.`);
-  }
-  return owners[0];
+  return found[0];
 }
 
 /** A number as the schema's decimal string (≤ 12 integer and 9 fraction digits), else undefined. */

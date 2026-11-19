@@ -586,8 +586,13 @@ systems:
   nothing. A tie is a config error: the same glob in two systems (after
   `**/**` becomes `**`) fails validation, and a changed file that two
   systems match equally fails `deploy record`.
-- Keep each system's AI files (prompts, model config, datasets, …) under
-  its own `paths:`: `deploy record` gives a changed file to its owner only.
+- Every file a system declares (model files, prompts, safety, datasets,
+  retrieval, tools, product config, eval method, a suite's prompts, files
+  and rubric) must be its own: matched by its `paths:` and not won by a
+  more specific glob of another system. `deploy record` gives a changed file
+  to its owner only, so anything else is a config error, e.g.
+  `systems[0].tools[0]: config/tools.json is not under this system's paths
+  (add it to paths: or move it)`. Version 1 owns `**`, so any file is fine.
 - A threshold (`gte:`/`lte:`) is a number below 1000000000000 with at most 9
   decimal places, as Complyd stores it; anything else is a config error.
 - System names and suite names are unique across the file: a results suite

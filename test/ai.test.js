@@ -585,8 +585,8 @@ test('config v2: systems with paths; suites listed across systems; v1 is one sys
   const cfg = v2();
   assert.equal(cfg.version, 2);
   assert.deepEqual(cfg.systems.map((s) => [s.system, s.paths]), [
-    ['support-assistant', ['services/support/**', 'prompts/**', 'config/llm.yaml']],
-    ['AIS-0042', ['services/**']],
+    ['support-assistant', ['services/support/**', 'prompts/**', 'config/llm.yaml', 'evals/data/**']],
+    ['AIS-0042', ['services/**', 'evals/rubric.md', 'config/tools.json']],
   ]);
   assert.deepEqual(cfg.suites.map((s) => s.name), ['safety-refusals', 'ranking-quality']);
   assert.equal(cfg.systems[1].model.files.length, 0);
@@ -637,16 +637,16 @@ test('globs: * stays in a directory, ** spans any, ? is one character; the most 
   assert.equal(owner('prompts/support.txt'), 'support-assistant');
   assert.equal(owner('README.md'), undefined);
   const tie = parseConfig(
-    'version: 2\nsystems:\n  - system: a\n    paths: ["src/*/x"]\n    prompts: [p]\n    suites:\n      - name: s1\n        test_set: { version: "1" }\n  - system: b\n    paths: ["src/a/*"]\n    prompts: [p]\n    suites:\n      - name: s2\n        test_set: { version: "1" }',
+    'version: 2\nsystems:\n  - system: a\n    paths: ["src/*/x"]\n    prompts: [src/b/x]\n    suites:\n      - name: s1\n        test_set: { version: "1" }\n  - system: b\n    paths: ["src/a/*"]\n    prompts: [src/a/y]\n    suites:\n      - name: s2\n        test_set: { version: "1" }',
   );
   assert.equal(ownerOf(tie, 'src/b/x').system, 'a');
   assert.throws(() => ownerOf(tie, 'src/a/x'), { code: 'config', message: /src\/a\/x matches the paths of a and b equally: make one of their globs more specific/ });
 });
 
-/** A v2 config of the given systems: [name, paths, extra yaml lines]. */
+/** A v2 config of the given systems: [name, paths, extra yaml lines]; each also owns and declares prompts/<name>.txt. */
 const sysYaml = (list) =>
   'version: 2\nsystems:\n' +
-  list.map(([name, paths, extra = '']) => `  - system: ${name}\n    paths: ${JSON.stringify(paths)}\n    prompts: [prompts/support.txt]\n${extra}    suites:\n      - name: ${name}-s\n        test_set: { version: "1" }\n`).join('');
+  list.map(([name, paths, extra = '']) => `  - system: ${name}\n    paths: ${JSON.stringify([...paths, `prompts/${name}.txt`])}\n    prompts: [prompts/${name}.txt]\n${extra}    suites:\n      - name: ${name}-s\n        test_set: { version: "1" }\n`).join('');
 
 test('globs: matching is linear, whatever the glob and path (no backtracking blow-up)', () => {
   const probe = (glob, file) => {
@@ -666,7 +666,7 @@ test('globs: matching is linear, whatever the glob and path (no backtracking blo
 });
 
 test('globs: equal globs are one spelling (consecutive ** collapse); the most literal glob wins, extra ** add nothing', () => {
-  assert.deepEqual(parseConfig(sysYaml([['a', ['src/**/**/x', '**/**']]])).systems[0].paths, ['src/**/x', '**']);
+  assert.deepEqual(parseConfig(sysYaml([['a', ['src/**/**/x', '**/**']]])).systems[0].paths, ['src/**/x', '**', 'prompts/a.txt']);
   assert.throws(() => parseConfig(sysYaml([['a', ['**']], ['b', ['**/**']]])), { code: 'config', message: /systems\[1\].paths: "\*\*" is also in systems\[0\].paths/ });
   const cfg = parseConfig(sysYaml([['a', ['src/**']], ['b', ['**/*/**/*/**/*/**/*']]]));
   assert.equal(ownerOf(cfg, 'src/file.js').system, 'a');
@@ -697,7 +697,7 @@ test('thresholds: only values the wire decimal holds exactly (â‰¤ 12 integer, â‰
 
 test('ai_eval body: repo_config counts against the 64 KiB cap and is never cut; an error names it', () => {
   const long = (i, j) => `services/s${i}/` + 'd'.repeat(170) + `/p${j}/**`;
-  const big = parseConfig(sysYaml([0, 1, 2, 3, 4].map((i) => [`s${i}`, Array.from({ length: 100 }, (_, j) => long(i, j))])));
+  const big = parseConfig(sysYaml([0, 1, 2, 3, 4].map((i) => [`s${i}`, Array.from({ length: 99 }, (_, j) => long(i, j))])));
   const env = (cfg, suites) => envelope({ suites, truncated: false, repo_config: repoConfig(cfg) }, { id: 'x', subject: 'x', observedAt: 'x', schema: 'ai_eval' });
   assert.ok(Buffer.byteLength(JSON.stringify(repoConfig(big))) > MAX_BODY_BYTES);
   assert.throws(() => fitSuites(env(big, [{ name: 'one' }])), { code: 'config', message: /^repo_config \(the summary of .complyd\/ai.yml: \d+ bytes\) doesn't fit Complyd's 64 KiB request/ });
@@ -718,12 +718,12 @@ test('repo_config: names, globs, required and thresholds, and the file hash; no 
     systems: [
       {
         system: 'support-assistant',
-        paths: ['services/support/**', 'prompts/**', 'config/llm.yaml'],
+        paths: ['services/support/**', 'prompts/**', 'config/llm.yaml', 'evals/data/**'],
         suites: [{ name: 'safety-refusals', required: true, metrics: { pass_rate: { gte: '0.9' } } }],
       },
       {
         system: 'AIS-0042',
-        paths: ['services/**'],
+        paths: ['services/**', 'evals/rubric.md', 'config/tools.json'],
         suites: [{ name: 'ranking-quality', required: false, metrics: { ndcg: { gte: '0.75' }, toxicity: { lte: '0.01' } } }],
       },
     ],
@@ -848,7 +848,7 @@ test('deploy record v2: one record per touched system, chosen by paths and AI fi
 test('deploy record v2: a changed file two systems own equally is a config error', () => {
   const { dir, git } = gitRepo();
   const yml =
-    'version: 2\nsystems:\n  - system: a\n    paths: ["src/*/x"]\n    prompts: [prompts/support.txt]\n    suites:\n      - name: s1\n        test_set: { version: "1" }\n  - system: b\n    paths: ["src/a/*"]\n    prompts: [prompts/support.txt]\n    suites:\n      - name: s2\n        test_set: { version: "1" }\n';
+    'version: 2\nsystems:\n  - system: a\n    paths: ["src/*/x"]\n    prompts: [src/b/x]\n    suites:\n      - name: s1\n        test_set: { version: "1" }\n  - system: b\n    paths: ["src/a/*"]\n    prompts: [src/a/y]\n    suites:\n      - name: s2\n        test_set: { version: "1" }\n';
   writeFileSync(join(dir, '.complyd', 'ai.yml'), yml);
   git('commit', '-qam', 'two');
   mkdirSync(join(dir, 'src', 'a'), { recursive: true });
@@ -889,24 +889,44 @@ test('deploy record v2: a config-only change (paths, rename, removal, comment) g
   assert.deepEqual(recs.map((r) => [r.system, r.config_changed]), [['a2', true]]);
 });
 
-test('deploy record v2: an AI file two systems name records only for its owner (the overlap winner)', () => {
-  const { dir, git } = gitRepo();
-  const both = '    model:\n      files: [src/p]\n';
-  mkdirSync(join(dir, 'src', 'private'), { recursive: true });
-  writeFileSync(join(dir, 'src', 'p'), 'one\n');
-  writeFileSync(join(dir, '.complyd', 'ai.yml'), sysYaml([['a', ['src/**'], both], ['b', ['src/private/**'], both]]));
-  git('add', '-A');
-  git('commit', '-qm', 'two');
-  writeFileSync(join(dir, 'src', 'p'), 'two\n');
-  git('commit', '-qam', 'three');
-  const recs = deployRecord({ environment: 'production', root: dir });
-  assert.deepEqual(recs.map((r) => [r.system, r.changes.map((c) => c.kind)]), [['a', ['model']]]);
+test('config v2: every file a system declares must be its own (under its paths, not won by a more specific glob)', () => {
+  const sys = (name, paths, extra) => `  - system: ${name}\n    paths: ${JSON.stringify(paths)}\n${extra}    suites:\n      - name: ${name}-s\n        prompts: [${name}/p.txt]\n        test_set: { version: "1" }\n`;
+  const not = (where, file) => new RegExp(`${where.replace(/[[\].]/g, '\\$&')}: ${file} is not under this system's paths .*\\(add it to paths: or move it\\)`);
+  for (const [extra, where, file] of [
+    ['    tools: [config/tools.json]\n', 'systems[0].tools[0]', 'config/tools.json'],
+    ['    prompts: [x/p.txt, config/p.txt]\n', 'systems[0].prompts[1]', 'config/p.txt'],
+    ['    model:\n      files: [config/llm.yaml]\n', 'systems[0].model.files[0]', 'config/llm.yaml'],
+    ['    safety:\n      files: [config/safety.md]\n', 'systems[0].safety.files[0]', 'config/safety.md'],
+    ['    retrieval: [config/r.yaml]\n', 'systems[0].retrieval[0]', 'config/r.yaml'],
+    ['    product_config: [config/pc.yaml]\n', 'systems[0].product_config[0]', 'config/pc.yaml'],
+    ['    eval_method: [config/em.md]\n', 'systems[0].eval_method[0]', 'config/em.md'],
+    ['    datasets:\n      d:\n        path: data/d.jsonl\n', 'systems[0].datasets.d.path', 'data/d.jsonl'],
+  ]) {
+    assert.throws(() => parseConfig('version: 2\nsystems:\n' + sys('x', ['x/**'], extra) + sys('y', ['y/**'], '')), { code: 'config', message: not(where, file) }, where);
+  }
+  // Suite files, its own prompts and its rubric.
+  const suite = (lines) => 'version: 2\nsystems:\n' + sys('x', ['x/**'], '').replace('        test_set:', `${lines}        test_set:`) + sys('y', ['y/**'], '');
+  assert.throws(() => parseConfig(suite('        files: [x/a, y/b]\n')), { message: not('systems[0].suites[0].files[1]', 'y/b') });
+  assert.throws(() => parseConfig(suite('        evaluator: { rubric: rubric.md }\n')), { message: not('systems[0].suites[0].evaluator.rubric', 'rubric.md') });
+  assert.throws(() => parseConfig(suite('').replace('prompts: [x/p.txt]', 'prompts: [y/p.txt]')), { message: not('systems[0].suites[0].prompts[0]', 'y/p.txt') });
+  // Under its paths but won by a more specific glob of another system: the winner is named.
+  const won = 'version: 2\nsystems:\n' + sys('a', ['src/**'], '    model:\n      files: [src/private/m]\n') + sys('b', ['src/private/**'], '');
+  assert.throws(() => parseConfig(won.replace('a/p.txt', 'src/a.txt').replace('b/p.txt', 'src/private/b.txt')), {
+    message: /systems\[0\]\.model\.files\[0\]: src\/private\/m is not under this system's paths \(it belongs to b: a more specific glob\) \(add it to paths: or move it\)/,
+  });
+  // A declared file two systems match equally: the field is named.
+  const tie = 'version: 2\nsystems:\n' + sys('a', ['src/*/x'], '    tools: [src/a/x]\n') + sys('b', ['src/a/*'], '');
+  assert.throws(() => parseConfig(tie.replace('a/p.txt', 'src/b/x').replace('b/p.txt', 'src/a/y')), { message: /systems\[0\]\.tools\[0\]: src\/a\/x matches the paths of a and b equally/ });
+  // Owned files pass.
+  assert.doesNotThrow(() => parseConfig('version: 2\nsystems:\n' + sys('x', ['x/**', 'config/tools.json'], '    tools: [config/tools.json]\n') + sys('y', ['y/**'], '')));
+  // v1 owns **: any repository file may be declared.
+  assert.doesNotThrow(() => parseConfig('version: 1\ntools: [anywhere/t.json]\nprompts: [p]\nsuites:\n  - name: a\n    test_set: { version: "1" }'));
 });
 
 test('CLI deploy record: a repo_config over the 64 KiB cap is an error naming it, not a cut record', async () => {
   const { dir, git } = gitRepo();
   const long = (i, j) => `services/s${i}/` + 'd'.repeat(170) + `/p${j}/**`;
-  writeFileSync(join(dir, '.complyd', 'ai.yml'), sysYaml([0, 1, 2, 3, 4].map((i) => [`s${i}`, Array.from({ length: 100 }, (_, j) => long(i, j))])));
+  writeFileSync(join(dir, '.complyd', 'ai.yml'), sysYaml([0, 1, 2, 3, 4].map((i) => [`s${i}`, Array.from({ length: 99 }, (_, j) => long(i, j))])));
   git('commit', '-qam', 'two');
   const r = await cli(['deploy', 'record', '--environment', 'production', '--workspace', dir, '--dry-run']);
   assert.equal(r.code, 1, r.out.join('\n'));
