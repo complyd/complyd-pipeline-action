@@ -72,7 +72,7 @@ test('posts the reduced scan with the OIDC token for the trust audience', async 
       envelope: 1,
       id: '987654321-2-dependency_scan',
       collector: 'complyd_ci_scan',
-      collector_version: '1.1.0',
+      collector_version: '1.2.0',
       schema: 'dependency_scan',
       schema_version: 1,
       observed_at: '2026-11-13T08:00:00.000Z',
