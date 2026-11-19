@@ -1,6 +1,6 @@
 {
   "name": "@complyd/pipeline",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "Send your pipeline's dependency scan (SARIF or OSV-Scanner JSON) or SAST scan (SARIF) to Complyd from GitHub Actions, GitLab CI, CircleCI, Bitbucket Pipelines or any CI with an ingest key.",
   "license": "Apache-2.0",

@@ -7,6 +7,7 @@ const { readFileSync } = require('fs');
 const { join } = require('path');
 const { reduceSast, ruleId } = require('../src/sast');
 const { MAX_FINDINGS } = require('../src/reduce');
+const { assertValid } = require('./schemas');
 
 const fixture = (name) => JSON.parse(readFileSync(join(__dirname, 'fixtures', name), 'utf8'));
 const opts = { commit: 'a'.repeat(40), scannedAt: '2026-11-14T08:00:00.000Z', subject: 'github:123456789' };
@@ -180,4 +181,23 @@ test('real Semgrep OSS: the "requires login" fingerprint is ignored, the hash is
   // Two results of one rule in one file stay two findings (their matched code differs).
   assert.equal(p.findings.filter((f) => f.rule.endsWith('direct-response-write')).length, 2);
   assert.doesNotMatch(JSON.stringify(p), /app\.js|run_job|web\/|tools\/|res\.send/);
+});
+
+test('v2 files: CodeQL\'s extracted files and every result\'s file, merged runs counted once; files-scanned and scannerVersion win', () => {
+  const js = fixture('real/codeql-javascript.real.sarif');
+  const py = fixture('real/codeql-python.real.sarif');
+  // Each run lists both languages' files as artifacts: only its extracted one counts.
+  assert.equal(reduceSast(js, opts).payload.files, 1);
+  assert.equal(reduceSast(py, opts).payload.files, 1);
+  assert.equal(reduceSast({ version: '2.1.0', runs: [...js.runs, ...py.runs] }, opts).payload.files, 2);
+  // Semgrep names only the files with results.
+  const semgrep = reduceSast(fixture('real/semgrep.real.sarif'), opts).payload;
+  assert.ok(semgrep.files > 0);
+  const clean = { version: '2.1.0', runs: [{ tool: { driver: { name: 'Semgrep OSS', semanticVersion: '1.95.0' } }, results: [] }] };
+  assert.equal(reduceSast(clean, opts).payload.files, 0);
+  const given = reduceSast(clean, { ...opts, filesScanned: 120, scannerVersion: '1.96.0' }).payload;
+  assert.equal(given.files, 120);
+  assert.equal(given.tool.version, '1.96.0');
+  for (const p of [semgrep, given, reduceSast(js, opts).payload, reduceSast(fixture('codeql.sarif'), opts).payload]) assertValid('sast_scan.v2', p);
+  assert.doesNotMatch(JSON.stringify(reduceSast(js, opts).payload), LEAKS);
 });

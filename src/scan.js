@@ -1,8 +1,9 @@
 'use strict';
 
 const { readFileSync, statSync, readdirSync } = require('fs');
-const { join } = require('path');
-const { reduce, ActionError } = require('./reduce');
+const { join, resolve } = require('path');
+const { createHash } = require('crypto');
+const { reduce, ActionError, PATTERN, MAX_COUNT } = require('./reduce');
 const { reduceSast } = require('./sast');
 const { envelope, fit, send } = require('./post');
 const { loadConfig, DEFAULT_CONFIG } = require('./ai-config');
@@ -67,23 +68,94 @@ function readResults(path, budget) {
   }
 }
 
+/**
+ * SHA-256 of the lockfile's bytes (only the hash is sent): `lockfile` if set
+ * (it must be readable), else the first of `named` (the lockfiles the scanner
+ * names, relative to `workspace`) on disk, else null.
+ */
+function lockfileHash(lockfile, named, workspace) {
+  const hash = (path) => {
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > MAX_RESULTS_BYTES) return null;
+    return createHash('sha256').update(readFileSync(path)).digest('hex');
+  };
+  if (lockfile) {
+    let h = null;
+    try {
+      h = hash(lockfile);
+    } catch {
+      // Reported below, without the system's message.
+    }
+    if (!h) throw new ActionError('input', `Couldn't read the lockfile (a regular file under ${MAX_RESULTS_BYTES / 1024 / 1024} MB).`);
+    return h;
+  }
+  for (const path of named) {
+    try {
+      const h = hash(resolve(workspace || '.', path.replace(/^file:\/\//i, '')));
+      if (h) return h;
+    } catch {
+      // Not on this runner (another machine's path): the next one.
+    }
+  }
+  return null;
+}
+
+/**
+ * The scanners Complyd counts a scan from (its collector's DEPENDENCY_SCANNERS
+ * and SAST_SCANNERS, complyd-api fix/ci-scan-severity): `tool.name` must start
+ * with one, lowercased. Only for the warning: Complyd decides.
+ */
+const KNOWN_SCANNERS = {
+  dependency: ['osv-scanner', 'trivy', 'grype', 'snyk', 'npm audit', 'npm-audit', 'pnpm audit', 'yarn audit', 'pip-audit', 'govulncheck', 'cargo-audit', 'cargo audit', 'bundler-audit', 'bundle-audit', 'dependency-check', 'owasp dependency-check', 'dependabot', 'mend', 'retire.js'],
+  sast: ['codeql', 'semgrep', 'opengrep', 'bandit', 'gosec', 'brakeman', 'snyk', 'sonarqube', 'sonarcloud', 'eslint', 'njsscan', 'checkmarx', 'spotbugs', 'devskim', 'horusec', 'trivy'],
+};
+
+/**
+ * Why Complyd will read this scan as "Couldn't check" rather than as a scan
+ * that ran (its rule, red team F12), or null: an unknown scanner, no version
+ * number, no packages and no lockfile hash (dependency), no files (SAST).
+ */
+function unprovenLine(kind, payload) {
+  const why = [];
+  const name = payload.tool.name.toLowerCase();
+  if (!KNOWN_SCANNERS[kind].some((k) => name.startsWith(k))) why.push(`Complyd doesn't know the scanner "${payload.tool.name}"`);
+  if (!/^v?\d+(\.\d+)/.test(payload.tool.version)) why.push(`the scanner's version "${payload.tool.version}" isn't a version number: set scanner-version (--scanner-version)`);
+  if (kind === 'sast' && payload.files === 0) why.push('the results name no scanned file: set files-scanned (--files-scanned)');
+  if (kind === 'dependency') {
+    const listed = new Set(payload.findings.map((f) => `${f.ecosystem}#${f.package}`)).size;
+    const read = payload.components > 0 ? payload.components >= listed : listed === 0 && payload.lockfile_sha256 !== null;
+    if (!read) why.push('it shows no package read: run the scanner with --all-packages (OSV-Scanner) or set lockfile (--lockfile)');
+  }
+  return why.length ? `Complyd will read this scan as "Couldn't check", not as a scan that ran: ${why.join('; ')}.` : null;
+}
+
 /** A subject id as Complyd takes it (github:…, gitlab-oidc:…, or under an ingest key's prefix). */
 const SUBJECT = /^[A-Za-z0-9:._/-]{1,200}$/;
 
 /**
  * The shared path of the action and the CLI: read the scanner's files, reduce
- * them to dependency_scan v1 (or sast_scan v1), wrap them in one envelope and
+ * them to dependency_scan v2 (or sast_scan v2), wrap them in one envelope and
  * post it. `apiUrl` must have passed allowedApiUrl; `getToken` gives the
  * bearer for each try (an OIDC token or the ingest key); `trust` is set for a
  * workload trust only. `runKey` makes the envelope id `<runKey>-<schema>`, so
- * a retry is a duplicate. `subject` also salts SAST fingerprints. Resolves
- * Complyd's answer, the payload sent and what couldn't be sent.
+ * a retry is a duplicate. `subject` also salts SAST fingerprints.
+ * `scannerVersion`, `lockfile` (dependency) and `filesScanned` (SAST, a
+ * string of digits) are optional. Resolves Complyd's answer, the payload
+ * sent, what couldn't be sent and `unproven` (unprovenLine).
  */
 async function scan(
-  { results, scan: kind, format = 'auto', commit, subject, runKey, workspace = '', apiUrl, trust, getToken },
+  { results, scan: kind, format = 'auto', commit, subject, runKey, workspace = '', apiUrl, trust, getToken, scannerVersion = '', lockfile = '', filesScanned = '' },
   { fetchImpl = fetch, now = () => new Date(), sleep } = {},
 ) {
   if (!SUBJECT.test(subject ?? '')) throw new ActionError('input', "The repository id isn't valid (letters, digits and : . _ / -).");
+  if (scannerVersion && !PATTERN.toolVersion.test(scannerVersion)) {
+    throw new ActionError('input', 'Set the scanner version to its version number, e.g. 2.7.1 (letters, digits and . _ + -).');
+  }
+  if (kind === 'sast' && lockfile) throw new ActionError('input', 'The lockfile is for a dependency scan.');
+  if (kind !== 'sast' && filesScanned) throw new ActionError('input', 'The number of files scanned is for a SAST scan.');
+  if (filesScanned && !(/^[0-9]{1,7}$/.test(filesScanned) && Number(filesScanned) <= MAX_COUNT)) {
+    throw new ActionError('input', `Set the number of files scanned to a whole number up to ${MAX_COUNT}.`);
+  }
   let budget = MAX_RESULTS_BYTES;
   const docs = resultFiles(results, kind).map((path) => {
     const read = readResults(path, budget);
@@ -96,17 +168,23 @@ async function scan(
       ? { version: docs[0]?.version, runs: docs.flatMap((d) => (Array.isArray(d?.runs) ? d.runs : [])) }
       : docs[0];
   const at = now().toISOString();
-  const { payload, dropped } = (kind === 'sast' ? reduceSast : reduce)(doc, {
+  const { payload, dropped, lockfiles } = (kind === 'sast' ? reduceSast : reduce)(doc, {
     format,
     commit,
     scannedAt: at,
     subject,
     workspace,
+    scannerVersion,
+    filesScanned: filesScanned ? Number(filesScanned) : undefined,
   });
+  if (kind !== 'sast') payload.lockfile_sha256 = lockfileHash(lockfile, lockfiles, workspace);
   const schema = kind === 'sast' ? 'sast_scan' : 'dependency_scan';
-  const body = fit(envelope(payload, { id: `${runKey}-${schema}`, subject, observedAt: at, schema }));
+  // v2: scanner identity and what it read (components, lockfile_sha256; files). Complyd reads v1 as "Couldn't check".
+  const body = fit(envelope(payload, { id: `${runKey}-${schema}`, subject, observedAt: at, schema, schemaVersion: 2 }));
+  // Before sending: the cut list doesn't change whether the scan ran.
+  const unproven = unprovenLine(kind === 'sast' ? 'sast' : 'dependency', payload);
   const answer = await send({ apiUrl, trust, body, getToken }, fetchImpl, sleep);
-  return { answer, payload: JSON.parse(body).payload, dropped };
+  return { answer, payload: JSON.parse(body).payload, dropped, unproven };
 }
 
 /**
@@ -190,4 +268,4 @@ const escape = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').repla
 const errorLine = (e) =>
   e instanceof ActionError ? e.message : `Unexpected error (${e?.name ?? 'Error'}${e?.cause?.code ? `, ${e.cause.code}` : ''}).`;
 
-module.exports = { scan, scanAi, aiSummary, summary, droppedLine, errorLine, escape, MAX_RESULTS_BYTES, MAX_RESULT_FILES };
+module.exports = { scan, unprovenLine, scanAi, aiSummary, summary, droppedLine, errorLine, escape, MAX_RESULTS_BYTES, MAX_RESULT_FILES };

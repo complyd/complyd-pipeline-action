@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SAST scan of one repository (Complyd CI scan, v2)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tool",
+    "commit",
+    "scanned_at",
+    "counts",
+    "findings",
+    "truncated",
+    "files"
+  ],
+  "properties": {
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "x-complyd-privacy": "none",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9 ._/@+-]{1,64}$",
+          "x-complyd-privacy": "none"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._+-]{1,40}$",
+          "x-complyd-privacy": "none"
+        }
+      }
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "x-complyd-privacy": "none"
+    },
+    "scanned_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 40,
+      "x-complyd-privacy": "none",
+      "x-complyd-volatile": true
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["critical", "high", "medium", "low"],
+      "x-complyd-privacy": "none",
+      "properties": {
+        "critical": { "$ref": "#/$defs/count", "x-complyd-privacy": "none" },
+        "high": { "$ref": "#/$defs/count", "x-complyd-privacy": "none" },
+        "medium": { "$ref": "#/$defs/count", "x-complyd-privacy": "none" },
+        "low": { "$ref": "#/$defs/count", "x-complyd-privacy": "none" }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 500,
+      "x-complyd-privacy": "none",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule", "severity", "fingerprint"],
+        "properties": {
+          "rule": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/@+-]{1,128}$",
+            "x-complyd-privacy": "none"
+          },
+          "severity": {
+            "enum": ["critical", "high", "medium", "low"],
+            "x-complyd-privacy": "none"
+          },
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "x-complyd-privacy": "none"
+          }
+        }
+      }
+    },
+    "truncated": {
+      "type": "boolean",
+      "x-complyd-privacy": "none"
+    },
+    "files": {
+      "$ref": "#/$defs/count",
+      "x-complyd-privacy": "none"
+    }
+  },
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+  }
+}

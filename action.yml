@@ -25,6 +25,15 @@ inputs:
     description: "auto, sarif or osv (auto reads the file to tell). For scan ai_eval, the eval tool: promptfoo, deepeval, openai-evals, lm-eval or generic."
     required: false
     default: auto
+  scanner-version:
+    description: The scanner's version, sent over the one in its output (OSV-Scanner JSON names none), e.g. 2.7.1. Complyd counts a scan only with a version number.
+    required: false
+  lockfile:
+    description: scan dependencies only. The lockfile the scanner read; only its SHA-256 is sent, which shows a scan with no packages read one. Defaults to the first lockfile the scanner's output names that is on the runner.
+    required: false
+  files-scanned:
+    description: scan sast only. The number of files the scanner scanned, sent over the count the SARIF gives (CodeQL's extracted files, else the files with findings; Semgrep names only those).
+    required: false
   role:
     description: scan ai_eval only. candidate (default, the change being released) or baseline (the version in production, re-run for comparison).
     required: false

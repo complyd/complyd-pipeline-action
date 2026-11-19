@@ -6,6 +6,8 @@ const { readFileSync } = require('fs');
 const { join } = require('path');
 const { reduce: reduceAll, parsePurl, findPurl, fromScore, MAX_FINDINGS } = require('../src/reduce');
 
+const { assertValid } = require('./schemas');
+
 const reduce = (doc, o) => reduceAll(doc, o).payload;
 
 const fixture = (name) => JSON.parse(readFileSync(join(__dirname, 'fixtures', name), 'utf8'));
@@ -26,8 +28,36 @@ test('OSV-Scanner JSON: one finding per alias group, worst first, no paths', () 
       { advisory: 'PYSEC-2024-1', ecosystem: 'PyPI', package: 'example-http', version: '2.0.0', severity: 'medium', fixed_in: null },
     ],
     truncated: false,
+    // The fixture's 3 packages; the caller sets the lockfile hash.
+    components: 3,
+    lockfile_sha256: null,
   });
-  assert.doesNotMatch(JSON.stringify(p), /runner|lock|requirements/);
+  assert.doesNotMatch(JSON.stringify(p), /runner|package-lock|requirements/);
+  assertValid('dependency_scan.v2', p);
+});
+
+test('v2: components counts every package OSV-Scanner lists (--all-packages), else the findings\' packages; lockfiles it names', () => {
+  const doc = fixture('osv-scanner.json');
+  doc.results[0].packages.push({ package: { name: 'clean-pkg', version: '1.0.0', ecosystem: 'npm' }, vulnerabilities: [], groups: [] });
+  const r = reduceAll(doc, opts);
+  assert.equal(r.payload.components, 4);
+  assert.deepEqual(r.lockfiles, ['/home/runner/work/payments-api/package-lock.json', '/home/runner/work/payments-api/requirements.txt']);
+  // SARIF has no inventory: the distinct packages of its findings (2 written).
+  const t = reduceAll(fixture('trivy.sarif'), opts);
+  assert.equal(t.payload.components, 2);
+  for (const name of ['trivy.sarif', 'purl.sarif', 'real/osv-scanner.real.sarif', 'real/grype.real.sarif', 'real/osv-scanner.real.json']) {
+    assertValid('dependency_scan.v2', reduce(fixture(name), opts));
+  }
+  // An empty scan reads 0 packages.
+  assert.equal(reduce({ results: [] }, opts).components, 0);
+  // Only lockfile names are offered to be hashed, never another path of the results file.
+  const sarif = { version: '2.1.0', runs: [{ tool: { driver: { name: 'osv-scanner' } }, artifacts: [{ location: { uri: 'file:///etc/passwd' } }, { location: { uri: 'web/yarn.lock' } }], results: [] }] };
+  assert.deepEqual(reduceAll(sarif, opts).lockfiles, ['web/yarn.lock']);
+});
+
+test('v2: scannerVersion is sent over the file\'s version (OSV-Scanner JSON names none)', () => {
+  assert.equal(reduce(fixture('osv-scanner.json'), { ...opts, scannerVersion: '2.7.1' }).tool.version, '2.7.1');
+  assert.deepEqual(reduce(fixture('trivy.sarif'), { ...opts, scannerVersion: '0.57.0' }).tool, { name: 'Trivy', version: '0.57.0' });
 });
 
 test('SARIF (Trivy): package lines from the message, ecosystem from the lockfile name, unreadable results mark it truncated', () => {
