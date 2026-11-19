@@ -591,9 +591,10 @@ systems:
 - A file matched by two systems belongs to the one whose matching glob is
   more specific: has more literal characters (not `*`, `?` or `/`), so
   `services/support/**` beats `services/**`, and extra `**` parts add
-  nothing. A tie is a config error: the same glob in two systems (after
-  `**/**` becomes `**`) fails validation, and a changed file that two
-  systems match equally fails `deploy record`.
+  nothing. A tie: the same glob in two systems (after `**/**` becomes
+  `**`) fails validation, and so does a declared file two systems match
+  equally; any other changed file two systems match equally belongs to
+  neither (as Complyd reads it), so `deploy record` leaves it out.
 - Every file a system declares (model files, prompts, safety, datasets,
   retrieval, tools, product config, eval method, a suite's prompts, files
   and rubric) must be its own: matched by its `paths:` and not won by a
@@ -734,8 +735,8 @@ With a version 2 file it prints a list: one record per system that owns a
 changed file (the owner of a file two systems match, see above). When
 `.complyd/ai.yml` changed (paths, a renamed or removed system, even a
 comment) and no system owns a changed file, the list is one record without
-`system_hint`, with no `changes` and the model `none/none` (Complyd ignores a
-config-only record's model), carrying `config_changed: true` and the new
+`system_hint`, with no `changes` and no release facts (no model, tools,
+datasets or eval run ids), carrying `config_changed: true` and the new
 `repo_config`. A commit that touches none prints `[]` with a warning.
 `--system` picks one system from the file (its record is printed even when
 the commit doesn't touch it). It needs the parent commit

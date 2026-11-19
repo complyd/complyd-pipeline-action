@@ -1,0 +1,61 @@
+{
+  "about": "ADR 0022 §5.7 ownership vectors shared with complyd-pipeline-action (copy this file; both sides test against it). Globs are as the config writes them; both sides collapse consecutive ** parts first. owner: the system the file belongs to; null with tie: true = a tie between systems (the action: config error; the server: the file is claimed by neither). A bare ** is left out here: the server reads it as the repository's default AI paths only.",
+  "cases": [
+    {
+      "name": "the more literal glob wins over a longer one",
+      "systems": { "A": ["a/*/*/*/*/x.md"], "B": ["a/bcdefg/**"] },
+      "file": "a/bcdefg/h/i/j/x.md",
+      "owner": "B"
+    },
+    {
+      "name": "a literal prefix beats many single stars",
+      "systems": { "A": ["*/*/*/*/*/*"], "B": ["a/**"] },
+      "file": "a/b/c/d/e/f",
+      "owner": "B"
+    },
+    {
+      "name": "a nested folder beats its parent",
+      "systems": { "A": ["services/**"], "B": ["services/support/**"] },
+      "file": "services/support/prompts/reply.md",
+      "owner": "B"
+    },
+    {
+      "name": "consecutive ** collapse before the score",
+      "systems": { "A": ["services/**/**/prompts/*"], "B": ["services/**"] },
+      "file": "services/x/prompts/a.md",
+      "owner": "A"
+    },
+    {
+      "name": "equal literal characters across systems: a tie",
+      "systems": { "A": ["ab/**"], "B": ["a*/b*/**"] },
+      "file": "ab/bc/x",
+      "owner": null,
+      "tie": true
+    },
+    {
+      "name": "the same glob in two systems: a tie",
+      "systems": { "A": ["shared/**"], "B": ["shared/**"] },
+      "file": "shared/x.md",
+      "owner": null,
+      "tie": true
+    },
+    {
+      "name": "? counts as a wildcard, not a literal",
+      "systems": { "A": ["svc/v?/**"], "B": ["svc/v1x/**"] },
+      "file": "svc/v1x/a",
+      "owner": "B"
+    },
+    {
+      "name": "only one system matches",
+      "systems": { "A": ["billing/**"], "B": ["support/**"] },
+      "file": "support/a.yaml",
+      "owner": "B"
+    },
+    {
+      "name": "no system matches",
+      "systems": { "A": ["billing/**"] },
+      "file": "docs/readme.md",
+      "owner": null
+    }
+  ]
+}

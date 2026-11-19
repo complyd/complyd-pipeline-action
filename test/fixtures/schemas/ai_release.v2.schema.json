@@ -3,7 +3,21 @@
   "title": "AI release deploy record of one repository (Complyd AI release, v2)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["commit", "environment", "released_at", "changes", "model", "tools", "datasets", "eval_run_ids"],
+  "required": ["commit", "environment", "changes"],
+  "if": {
+    "description": "ADR 0022 §5.7: a config-only record (ai.yml changed, no system owns a changed file) carries no release facts; any other record must.",
+    "properties": {
+      "config_changed": { "const": true },
+      "changes": { "type": "array", "maxItems": 0 },
+      "repo_config": { "type": "object", "properties": { "version": { "type": "integer", "minimum": 2 } } }
+    },
+    "required": ["config_changed", "repo_config"],
+    "not": { "properties": { "system_hint": true }, "required": ["system_hint"] }
+  },
+  "else": {
+    "properties": { "released_at": true, "model": true, "tools": true, "datasets": true, "eval_run_ids": true },
+    "required": ["released_at", "model", "tools", "datasets", "eval_run_ids"]
+  },
   "properties": {
     "commit": {
       "type": "string",
