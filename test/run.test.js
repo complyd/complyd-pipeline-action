@@ -6,7 +6,9 @@ const { join } = require('path');
 const { mkdtempSync, writeFileSync, readFileSync, truncateSync } = require('fs');
 const { tmpdir } = require('os');
 const { run, main, escape, MAX_RESULTS_BYTES, MAX_RESULT_FILES } = require('../src/index');
+const { unprovenLine } = require('../src/scan');
 const { envelope, fit, MAX_BODY_BYTES } = require('../src/post');
+const { assertValid } = require('./schemas');
 
 const TRUST = 'trw_11111111-1111-4111-8111-111111111111';
 const AUDIENCE = `https://api.complyd.ai/observations/${TRUST}`;
@@ -72,9 +74,9 @@ test('posts the reduced scan with the OIDC token for the trust audience', async 
       envelope: 1,
       id: '987654321-2-dependency_scan',
       collector: 'complyd_ci_scan',
-      collector_version: '1.2.0',
+      collector_version: '1.3.0',
       schema: 'dependency_scan',
-      schema_version: 1,
+      schema_version: 2,
       observed_at: '2026-11-13T08:00:00.000Z',
       subject: { type: 'repository', id: 'github:123456789' },
       payload: undefined,
@@ -96,7 +98,9 @@ test('scan: sast posts a sast_scan of the run, its own envelope id, no path or l
   assert.equal(sent.schema, 'sast_scan');
   assert.equal(sent.collector, 'complyd_ci_scan');
   assert.deepEqual(sent.payload, payload);
-  assert.deepEqual(Object.keys(sent.payload).sort(), ['commit', 'counts', 'findings', 'scanned_at', 'tool', 'truncated']);
+  assert.deepEqual(Object.keys(sent.payload).sort(), ['commit', 'counts', 'files', 'findings', 'scanned_at', 'tool', 'truncated']);
+  assert.equal(sent.schema_version, 2);
+  assertValid('sast_scan.v2', sent.payload);
   assert.equal(sent.payload.findings.length, 4);
   assert.doesNotMatch(body, /\.js|services\/|web\/|scripts\/|startLine|uri|message|snippet/);
 });
@@ -303,6 +307,12 @@ test('main: escapes every command line and output, masks the token, warns about 
     await main(env({ GITHUB_OUTPUT: output, INPUT_RESULTS: join(__dirname, 'fixtures', 'trivy.sarif') }));
     assert.ok(logs.some((l) => /^::warning::Not sent: 1 findings the action couldn't read \(no usable package name 1\): CVE-2024-0002\./.test(l)), logs.join('|'));
     assert.equal(readFileSync(output, 'utf8'), 'observation=obs_1\ndropped=1\n');
+    assert.ok(!logs.some((l) => /Couldn't check/.test(l)), logs.join('|'));
+
+    // OSV-Scanner JSON names no version: Complyd won't count it as a scan that ran.
+    logs.length = 0;
+    await main(env());
+    assert.ok(logs.some((l) => /^::warning::Complyd will read this scan as "Couldn't check".*set scanner-version/.test(l)), logs.join('|'));
   } finally {
     console.log = log;
     globalThis.fetch = realFetch;
@@ -349,3 +359,60 @@ test('scan: empty, dependency (1.0) and dependencies all send a dependency_scan;
     assert.equal(s.calls.length, 0);
   }
 });
+
+test('v2 dependency scan: the lockfile hash (input, else the one the scanner names), scanner-version; valid under Complyd\'s schema', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'complyd-lock-'));
+  const lock = join(dir, 'package-lock.json');
+  writeFileSync(lock, '{"lockfileVersion":3}\n');
+  const sha = require('crypto').createHash('sha256').update('{"lockfileVersion":3}\n').digest('hex');
+  const empty = join(dir, 'osv-empty.json');
+  writeFileSync(empty, JSON.stringify({ results: [] }));
+  const send = async (over) => {
+    const { calls, fetchImpl } = stub();
+    const r = await run(env(over), { fetchImpl });
+    return { ...r, sent: JSON.parse(calls[1].init.body).payload };
+  };
+  // Clean OSV-Scanner run, lockfile and version given: proves it ran.
+  const a = await send({ INPUT_RESULTS: empty, INPUT_LOCKFILE: lock, 'INPUT_SCANNER-VERSION': '2.7.1' });
+  assert.deepEqual([a.sent.tool, a.sent.components, a.sent.lockfile_sha256], [{ name: 'osv-scanner', version: '2.7.1' }, 0, sha]);
+  assert.equal(a.unproven, null);
+  assertValid('dependency_scan.v2', a.sent);
+  // No input: the lockfile the scanner's output names, relative to the workspace.
+  const named = join(dir, 'osv-named.json');
+  writeFileSync(named, JSON.stringify({ results: [{ source: { path: 'package-lock.json', type: 'lockfile' }, packages: [] }] }));
+  const b = await send({ INPUT_RESULTS: named, GITHUB_WORKSPACE: dir, 'INPUT_SCANNER-VERSION': '2.7.1' });
+  assert.equal(b.sent.lockfile_sha256, sha);
+  // Not on disk (another machine's path): null, and the step warns it proves nothing.
+  const c = await send({ INPUT_RESULTS: empty });
+  assert.equal(c.sent.lockfile_sha256, null);
+  assert.match(c.unproven, /Couldn't check.*version "unknown".*no package read/);
+  assertValid('dependency_scan.v2', c.sent);
+  // A lockfile input that can't be read fails before any request.
+  const { calls, fetchImpl } = stub();
+  await assert.rejects(run(env({ INPUT_LOCKFILE: join(dir, 'missing.lock') }), { fetchImpl }), /Couldn't read the lockfile/);
+  await assert.rejects(run(env({ INPUT_LOCKFILE: dir }), { fetchImpl }), /Couldn't read the lockfile/);
+  await assert.rejects(run(env({ 'INPUT_SCANNER-VERSION': '2.7.1; rm' }), { fetchImpl }), /scanner version/);
+  await assert.rejects(run(env({ 'INPUT_FILES-SCANNED': '3' }), { fetchImpl }), /for a SAST scan/);
+  await assert.rejects(run(env({ INPUT_SCAN: 'sast', INPUT_RESULTS: join(__dirname, 'fixtures', 'codeql.sarif'), 'INPUT_FILES-SCANNED': '-1' }), { fetchImpl }), /whole number/);
+  await assert.rejects(run(env({ INPUT_SCAN: 'sast', INPUT_RESULTS: join(__dirname, 'fixtures', 'codeql.sarif'), INPUT_LOCKFILE: lock }), { fetchImpl }), /dependency scan/);
+  assert.equal(calls.filter((x) => x.url.host === 'api.complyd.ai').length, 0);
+});
+
+test('unproven: mirrors Complyd\'s rule (known scanner, version number, packages or lockfile; SAST files)', () => {
+  const dep = (over) => ({ tool: { name: 'osv-scanner', version: '2.7.1' }, findings: [], components: 5, lockfile_sha256: null, ...over });
+  assert.equal(unprovenLine('dependency', dep()), null);
+  assert.equal(unprovenLine('dependency', dep({ tool: { name: 'Trivy', version: 'v0.57.0' } })), null);
+  assert.equal(unprovenLine('dependency', dep({ components: 0, lockfile_sha256: 'e'.repeat(64) })), null);
+  assert.match(unprovenLine('dependency', dep({ tool: { name: 'my-script', version: '1.0' } })), /doesn't know the scanner "my-script"/);
+  assert.match(unprovenLine('dependency', dep({ tool: { name: 'grype', version: 'dev' } })), /version "dev"/);
+  assert.match(unprovenLine('dependency', dep({ components: 0 })), /no package read/);
+  const f = { ecosystem: 'npm', package: 'a' };
+  assert.match(unprovenLine('dependency', dep({ components: 1, findings: [f, { ...f, package: 'b' }] })), /no package read/);
+  // A lockfile hash doesn't stand in for packages a scan lists but didn't count.
+  assert.match(unprovenLine('dependency', dep({ components: 0, findings: [f], lockfile_sha256: 'e'.repeat(64) })), /no package read/);
+  const sast = (over) => ({ tool: { name: 'Semgrep OSS', version: '1.95.0' }, findings: [], files: 3, ...over });
+  assert.equal(unprovenLine('sast', sast()), null);
+  assert.match(unprovenLine('sast', sast({ files: 0 })), /files-scanned/);
+  assert.match(unprovenLine('sast', sast({ tool: { name: 'osv-scanner', version: '1.0.0' } })), /doesn't know/);
+});
+

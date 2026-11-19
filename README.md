@@ -56,15 +56,31 @@ jobs:
           scan-args: |-
             --format=json
             --output=osv-results.json
+            --all-packages
             --recursive
             ./
       - name: Send the dependency scan to Complyd
         # Pin the release commit (see Releases); @v1 follows every v1.x.y.
-        uses: complyd/complyd-pipeline-action@<v1.2.0 commit SHA> # v1.2.0
+        uses: complyd/complyd-pipeline-action@<v1.3.0 commit SHA> # v1.3.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000 # your trust id
           results: osv-results.json
+          scanner-version: 2.7.1 # OSV-Scanner's JSON doesn't name its version
 ```
+
+**Show the scan ran.** Complyd counts a scan (for "scans run regularly"
+and "fixed within SLA") only when it shows a known scanner ran: a scanner
+Complyd knows by name (OSV-Scanner, Trivy, Grype, Snyk, npm/pnpm/yarn
+audit, pip-audit, govulncheck, cargo-audit, bundler-audit, OWASP
+Dependency-Check, Dependabot, Mend, retire.js), its version number, and the
+packages it read: the number of packages in its output (OSV-Scanner's
+`--all-packages` lists every one, not only vulnerable ones) or, when it read
+none, the SHA-256 of the lockfile. Otherwise Complyd stores the scan but
+reads both checks as "Couldn't check", and the step logs a warning saying
+what is missing. SARIF names the scanner and its version; OSV-Scanner's JSON
+names no version: set `scanner-version`. The lockfile hashed is `lockfile`
+if set, else the first lockfile the scanner's output names that is on the
+runner.
 
 The action signs in for the audience `https://api.complyd.ai/observations/<trust>`,
 the one Complyd gives a new trust. If Complyd shows the trust with a different
@@ -161,7 +177,7 @@ send both, one step each. A repository with CodeQL for JavaScript and Python:
         with:
           output: codeql-results # one SARIF file per language: javascript.sarif, python.sarif
       - name: Send the SAST scan to Complyd
-        uses: complyd/complyd-pipeline-action@<v1.2.0 commit SHA> # v1.2.0
+        uses: complyd/complyd-pipeline-action@<v1.3.0 commit SHA> # v1.3.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000
           scan: sast
@@ -169,7 +185,18 @@ send both, one step each. A repository with CodeQL for JavaScript and Python:
 ```
 
 Semgrep: `semgrep scan --config auto --sarif --output semgrep.sarif`, then
-`results: semgrep.sarif`. The readers are tested on real CodeQL 2.27.4 and
+`results: semgrep.sarif`.
+
+A SAST scan counts only with a scanner Complyd knows (CodeQL, Semgrep,
+Opengrep, Bandit, gosec, Brakeman, Snyk, SonarQube, SonarCloud, ESLint,
+njsscan, Checkmarx, SpotBugs, DevSkim, Horusec, Trivy), its version number
+and at least one file scanned. The action counts the files CodeQL lists as
+extracted, else the files with findings: Semgrep's SARIF names no others, so
+a Semgrep scan with no findings sends 0 and Complyd reads it as "Couldn't
+check". Set `files-scanned` to the number of files the scanner scanned, e.g.
+from Semgrep's JSON written beside the SARIF (`--sarif-output semgrep.sarif
+--json-output semgrep.json`, then `jq '.paths.scanned | length'
+semgrep.json`). The readers are tested on real CodeQL 2.27.4 and
 Semgrep OSS 1.185.0 output (`test/fixtures/real`), with the fingerprints
 pinned.
 
@@ -180,11 +207,13 @@ dependencies). It reads the same files, sends the same payload with the same
 limits and retries, and fails the job the same way.
 
 ```sh
-complyd-pipeline scan dependencies|sast --input <file> [--format auto|osv|sarif] [--repo <id>] [--commit <sha>] [sign-in options]
+complyd-pipeline scan dependencies|sast --input <file> [--format auto|osv|sarif] [--scanner-version <v>] [--lockfile <path> | --files-scanned <n>] [--repo <id>] [--commit <sha>] [sign-in options]
 ```
 
 `--input` can be repeated, or name a directory of `.sarif` files, for a SAST
-scan (as `results` in the action). `complyd-pipeline --help` lists every
+scan (as `results` in the action). `--scanner-version`, `--lockfile` and
+`--files-scanned` are the action's inputs of the same names (see [Show the
+scan ran](#set-up)). `complyd-pipeline --help` lists every
 option. Exit code 0: sent, or Complyd already has a newer scan; 1: refused
 or failed (the line says what to do); 2: a wrong option.
 
@@ -262,10 +291,12 @@ dependency-scan:
     - echo "${OSV_SCANNER_SHA256}  /usr/local/bin/osv-scanner" | sha256sum -c -
     - chmod +x /usr/local/bin/osv-scanner
     # osv-scanner exits 1 when it finds something: that is still a scan to send.
-    - osv-scanner scan source -r --format json . > osv-results.json || [ $? -eq 1 ]
+    # --all-packages: every package read, so Complyd sees the scan ran.
+    - osv-scanner scan source -r --all-packages --format json . > osv-results.json || [ $? -eq 1 ]
     - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
     - >
       complyd-pipeline scan dependencies --input osv-results.json
+      --scanner-version "$OSV_SCANNER_VERSION"
       --trust trw_00000000-0000-4000-8000-000000000000
       --audience https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
       --id-token-var COMPLYD_ID_TOKEN
@@ -296,7 +327,7 @@ stage('Send the dependency scan to Complyd') {
     withCredentials([string(credentialsId: 'complyd-ingest-key', variable: 'COMPLYD_INGEST_KEY')]) {
       sh '''
         docker run --rm -e COMPLYD_INGEST_KEY -e BUILD_TAG -v "$PWD:/src:ro" -w /src complyd-pipeline \
-          scan dependencies --input osv-results.json --repo jenkins:acme/payments-api --commit "$GIT_COMMIT"
+          scan dependencies --input osv-results.json --scanner-version 2.7.1 --repo jenkins:acme/payments-api --commit "$GIT_COMMIT"
       '''
     }
   }
@@ -367,13 +398,13 @@ jobs:
       - image: cimg/node:22.11
     steps:
       - checkout
-      # … run OSV-Scanner, writing osv-results.json
+      # … run OSV-Scanner (--all-packages --format json), writing osv-results.json
       - run:
           name: Send the dependency scan to Complyd
           command: |
             npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
             COMPLYD_ID_TOKEN=$(circleci run oidc get --v3 --aud "https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000") \
-              complyd-pipeline scan dependencies --input osv-results.json \
+              complyd-pipeline scan dependencies --input osv-results.json --scanner-version 2.7.1 \
                 --trust trw_00000000-0000-4000-8000-000000000000 \
                 --id-token-var COMPLYD_ID_TOKEN \
                 --repo circleci-oidc:<project id>
@@ -412,10 +443,10 @@ pipelines:
             audiences:
               - https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
           script:
-            # … run OSV-Scanner, writing osv-results.json
+            # … run OSV-Scanner (--all-packages --format json), writing osv-results.json
             - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
             - >
-              complyd-pipeline scan dependencies --input osv-results.json
+              complyd-pipeline scan dependencies --input osv-results.json --scanner-version 2.7.1
               --trust trw_00000000-0000-4000-8000-000000000000
               --id-token-var BITBUCKET_STEP_OIDC_TOKEN
 ```
@@ -439,10 +470,10 @@ trigger:
 pool:
   vmImage: ubuntu-latest
 steps:
-  # … run OSV-Scanner, writing osv-results.json
+  # … run OSV-Scanner (--all-packages --format json), writing osv-results.json
   - script: |
       npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
-      complyd-pipeline scan dependencies --input osv-results.json \
+      complyd-pipeline scan dependencies --input osv-results.json --scanner-version 2.7.1 \
         --repo azure-devops:acme/payments-api \
         --run-id "$(Build.BuildId)-$(System.JobAttempt)"
     displayName: Send the dependency scan to Complyd
@@ -760,6 +791,9 @@ hashes `scan ai_eval` sends for the same file.
 | `input` | yes* | Same as `results` (*set one of them) |
 | `scan` | no | `dependencies` (default; `dependency` also works), `sast` (SARIF only) or `ai_eval` |
 | `format` | no | `auto` (default), `sarif` or `osv`; for `ai_eval`: `promptfoo`, `deepeval`, `openai-evals`, `lm-eval` or `generic` |
+| `scanner-version` | no | The scanner's version, sent over the one in its output; set it for OSV-Scanner JSON, which names none |
+| `lockfile` | no | `dependencies` only: the lockfile the scanner read (only its SHA-256 is sent). Default: the first lockfile the scanner's output names that is on the runner |
+| `files-scanned` | no | `sast` only: the number of files scanned, over the count the SARIF gives (set it for Semgrep) |
 | `role` | no | `ai_eval` only: `candidate` (default) or `baseline` |
 | `suite-config` | no | `ai_eval` only: the AI config, default `.complyd/ai.yml` |
 | `api-url` | no | For testing only: Complyd's address, defaults to the audience's origin and must be on the same host |
@@ -777,10 +811,16 @@ many findings the action couldn't read (see below).
 ## What Complyd receives
 
 For a dependency scan, one observation per run (`<run id>-<run attempt>-dependency_scan`, so a
-retried request is not stored twice): the scanner's name and version, the
-commit, the scan time, the counts per severity (after merging duplicates,
-before the 500 cut), up to 500 findings (most severe first) and whether the
-list was cut. Each finding carries its advisory's other ids (`aliases`, e.g.
+retried request is not stored twice), schema `dependency_scan` v2: the
+scanner's name and version (`tool`), the commit, the scan time, the counts
+per severity (after merging duplicates, before the 500 cut), up to 500
+findings (most severe first), whether the list was cut, `components` (the
+number of packages in the scanner's output; for SARIF, which lists only
+findings, the distinct packages of the findings) and `lockfile_sha256` (the
+SHA-256 of the lockfile's bytes, or null when none is found; never the file
+or its path). These last two, the scanner's name and its version are what
+Complyd checks to count the scan as one that ran (see [Show the scan
+ran](#set-up)); version 1, without them, is read as "Couldn't check". Each finding carries its advisory's other ids (`aliases`, e.g.
 the CVE beside a GHSA id) when the scanner names them, so Complyd keeps its
 first-seen date when an alias is published later or you switch scanner.
 
@@ -852,9 +892,11 @@ error naming `repo_config`; shorten `paths:` or the suites in
 A version 1 file gives one system with `"paths": ["**"]` (and no `system`
 when the file has no `system:`).
 
-For a SAST scan, one observation per run (`<run id>-<run attempt>-sast_scan`):
-the same envelope, with each finding reduced to its rule id, severity and
-fingerprint (see [SAST scans](#sast-scans)).
+For a SAST scan, one observation per run (`<run id>-<run attempt>-sast_scan`),
+schema `sast_scan` v2: the same envelope, with each finding reduced to its
+rule id, severity and fingerprint (see [SAST scans](#sast-scans)), and
+`files`, the number of files scanned (only the number; see [SAST
+scans](#sast-scans) for how it is counted).
 
 **The sign-in token.** Beside the scan, each request carries the sign-in
 token your CI issues for the trust's audience (or your ingest key). Complyd

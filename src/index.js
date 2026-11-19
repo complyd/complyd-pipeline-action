@@ -12,7 +12,7 @@ const input = (env, name) => (env[`INPUT_${name.toUpperCase()}`] ?? '').trim();
 
 /**
  * The whole action: read the scanner's file, reduce it to dependency_scan
- * v1 (or sast_scan v1 with `scan: sast`), sign in with the job's OIDC token for the trust's audience and post
+ * v2 (or sast_scan v2 with `scan: sast`), sign in with the job's OIDC token for the trust's audience and post
  * it. Resolves Complyd's answer, the payload sent and what couldn't be sent;
  * throws an ActionError with advice on any refusal. `env` is process.env on
  * a runner; `fetchImpl` and `sleep` are for tests.
@@ -93,6 +93,9 @@ async function run(env = process.env, { fetchImpl = fetch, now = () => new Date(
       apiUrl,
       trust,
       getToken,
+      scannerVersion: input(env, 'scanner-version'),
+      lockfile: input(env, 'lockfile'),
+      filesScanned: input(env, 'files-scanned'),
     },
     { fetchImpl, now, sleep },
   );
@@ -112,10 +115,11 @@ async function main(env = process.env) {
       out('dropped', '0');
       return;
     }
-    const { answer, payload, dropped } = r;
+    const { answer, payload, dropped, unproven } = r;
     const [sent, stored] = summary({ answer, payload });
     console.log(sent);
     if (dropped.count) console.log(`::warning::${escape(droppedLine(dropped))}`);
+    if (unproven) console.log(`::warning::${escape(unproven)}`);
     console.log(stored);
     // run() accepts only an obs_ id; escaped anyway, as every output is.
     out('observation', answer.observation);

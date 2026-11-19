@@ -337,3 +337,25 @@ test('Azure DevOps with an ingest key: the commit from BUILD_SOURCEVERSION', () 
   const { kind, values } = parse(['scan', 'dependencies', '--input', OSV, '--repo', 'azure-devops:acme/app', '--run-id', '42-1']);
   assert.equal(options(kind, values, { COMPLYD_INGEST_KEY: KEY, BUILD_SOURCEVERSION: SHA.toUpperCase() }).commit, SHA);
 });
+
+test('v2 flags: --scanner-version, --lockfile (only its hash is sent), --files-scanned; a warning when the scan proves nothing', async () => {
+  const lock = join(__dirname, 'fixtures', 'osv-scanner.json');
+  const sha = require('crypto').createHash('sha256').update(require('fs').readFileSync(lock)).digest('hex');
+  const base = ['--repo', 'jenkins:acme/app', '--commit', SHA, '--run-id', 'b42'];
+  const dep = await cli(['scan', 'dependencies', '--input', OSV, '--scanner-version', '2.7.1', '--lockfile', lock, ...base], { COMPLYD_INGEST_KEY: KEY });
+  assert.equal(dep.code, 0);
+  const sent = JSON.parse(dep.s.posts()[0].init.body);
+  assert.equal(sent.schema_version, 2);
+  assert.deepEqual([sent.payload.tool, sent.payload.components, sent.payload.lockfile_sha256], [{ name: 'osv-scanner', version: '2.7.1' }, 3, sha]);
+  assert.deepEqual(dep.err, []);
+  const sast = await cli(['scan', 'sast', '--input', CODEQL, '--files-scanned', '42', ...base], { COMPLYD_INGEST_KEY: KEY });
+  assert.equal(JSON.parse(sast.s.posts()[0].init.body).payload.files, 42);
+  // Without the version: sent, with a warning on stderr.
+  const bare = await cli(['scan', 'dependencies', '--input', OSV, ...base], { COMPLYD_INGEST_KEY: KEY });
+  assert.equal(bare.code, 0);
+  assert.match(bare.err.join('|'), /^warning: Complyd will read this scan as "Couldn't check".*--scanner-version/);
+  // Wrong kind or value: refused before any request.
+  const bad = await cli(['scan', 'sast', '--input', CODEQL, '--files-scanned', 'many', ...base], { COMPLYD_INGEST_KEY: KEY });
+  assert.equal(bad.code, 1);
+  assert.equal(bad.s.posts().length, 0);
+});

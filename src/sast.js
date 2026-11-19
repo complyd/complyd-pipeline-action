@@ -1,12 +1,13 @@
 'use strict';
 
 const { createHash, createHmac } = require('crypto');
-const { ActionError, detect, fromScore, LEVEL, MAX_FINDINGS } = require('./reduce');
+const { ActionError, detect, fromScore, LEVEL, MAX_FINDINGS, MAX_COUNT } = require('./reduce');
 
 /**
  * Reduces a SAST scanner's SARIF 2.1.0 (CodeQL, Semgrep, …) to Complyd's
- * `sast_scan` v1 payload: tool {name, version}, commit, scanned_at, counts,
- * findings[] (≤ 500: rule id, severity, fingerprint) and truncated. A
+ * `sast_scan` v2 payload: tool {name, version}, commit, scanned_at, counts,
+ * findings[] (≤ 500: rule id, severity, fingerprint), truncated and files
+ * (the number of files scanned; only the number leaves the runner). A
  * finding's location is sent only as an HMAC-SHA-256 computed here, keyed by
  * the repository's subject id (`github:<repository id>`, `gitlab-oidc:…`; a salt,
  * not a secret): no file
@@ -83,6 +84,24 @@ function fingerprint(rule, result, salt, workspace) {
   return hmac([rule, uri, snippet, message].join('\n'));
 }
 
+/**
+ * The files a run names as scanned: CodeQL's successfully-extracted-files
+ * notifications, and every result's file. Not `run.artifacts`: CodeQL lists
+ * other languages' files there too. Semgrep names only files with results.
+ */
+function scannedFiles(run, workspace, into) {
+  const add = (loc) => {
+    const uri = str(loc?.physicalLocation?.artifactLocation?.uri);
+    if (uri) into.add(relativeUri(uri, workspace));
+  };
+  for (const inv of list(run?.invocations)) {
+    for (const n of list(inv?.toolExecutionNotifications)) {
+      if (/\/diagnostics\/successfully-extracted-files$/.test(str(n?.descriptor?.id) ?? '')) list(n.locations).forEach(add);
+    }
+  }
+  for (const r of list(run?.results)) list(r?.locations).forEach(add);
+}
+
 /** Results that are not open findings: passes, suppressed or fixed ones. */
 function isOpen(result) {
   if (result.kind && result.kind !== 'fail') return false;
@@ -109,9 +128,10 @@ function severityOf(result, rule) {
 /**
  * SARIF (parsed) → { payload, dropped }, as `reduce` for dependency scans. A
  * result with no rule id can't be named: it is dropped and marks the scan
- * truncated.
+ * truncated. `scannerVersion` and `filesScanned` (optional) are used over
+ * what the file says.
  */
-function reduceSast(doc, { format = 'auto', commit, scannedAt, subject, workspace = '' }) {
+function reduceSast(doc, { format = 'auto', commit, scannedAt, subject, workspace = '', scannerVersion, filesScanned }) {
   if ((format !== 'auto' && format !== 'sarif') || detect(doc) !== 'sarif') {
     throw new ActionError('results', "A SAST scan must be SARIF 2.1.0: check the scanner's output option.");
   }
@@ -125,7 +145,9 @@ function reduceSast(doc, { format = 'auto', commit, scannedAt, subject, workspac
   let tool = null;
   let droppedCount = 0;
   const byKey = new Map();
+  const files = new Set();
   for (const run of list(doc.runs)) {
+    scannedFiles(run, workspace, files);
     const driver = run?.tool?.driver ?? {};
     tool ??= { name: driver.name, version: driver.semanticVersion ?? driver.version };
     const rules = list(driver.rules);
@@ -158,13 +180,14 @@ function reduceSast(doc, { format = 'auto', commit, scannedAt, subject, workspac
   const payload = {
     tool: {
       name: clean(tool?.name, TOOL_NAME, 64, 'unknown'),
-      version: clean(tool?.version, TOOL_VERSION, 40, 'unknown'),
+      version: clean(scannerVersion || tool?.version, TOOL_VERSION, 40, 'unknown'),
     },
     commit,
     scanned_at: scannedAt,
     counts,
     findings: findings.slice(0, MAX_FINDINGS),
     truncated: droppedCount > 0 || findings.length > MAX_FINDINGS,
+    files: Math.min(MAX_COUNT, filesScanned ?? files.size),
   };
   const dropped = { count: droppedCount, reasons: droppedCount ? { 'no rule id': droppedCount } : {}, ids: [] };
   return { payload, dropped };

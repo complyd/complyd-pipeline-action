@@ -1,9 +1,11 @@
 'use strict';
 
 /**
- * Reduces a scanner's output to Complyd's `dependency_scan` v1 payload:
+ * Reduces a scanner's output to Complyd's `dependency_scan` v2 payload:
  * tool {name, version}, commit, scanned_at, counts, findings[] (≤ 500:
- * advisory, ecosystem, package, version, severity, fixed_in) and truncated.
+ * advisory, ecosystem, package, version, severity, fixed_in), truncated,
+ * components (packages read) and lockfile_sha256 (set by the caller, which
+ * reads the files; `lockfiles` names the ones the scanner read).
  * The payload holds nothing else: no file paths, no code, no author,
  * committer or actor (the CI's sign-in token, sent beside it, is not part
  * of it). The patterns below are the payload schema's; a finding
@@ -13,6 +15,8 @@
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low'];
 const MAX_FINDINGS = 500;
+/** The schemas' largest count. */
+const MAX_COUNT = 1000000;
 
 const PATTERN = {
   toolName: /^[A-Za-z0-9 ._/@+-]{1,64}$/,
@@ -159,7 +163,14 @@ function fromOsv(doc) {
       }
     }
   }
-  return { tool: { name: 'osv-scanner', version: null }, raw };
+  const results = list(doc.results);
+  return {
+    tool: { name: 'osv-scanner', version: null },
+    raw,
+    // Every package in the output: with --all-packages, every one it read.
+    components: results.reduce((n, r) => n + list(r?.packages).length, 0),
+    lockfiles: results.filter((r) => r?.source?.type === 'lockfile').map((r) => r.source.path),
+  };
 }
 
 const list = (v) => (Array.isArray(v) ? v : []);
@@ -236,8 +247,10 @@ const LEVEL = new Map([
 /** SARIF 2.1.0 from a dependency scanner (osv-scanner, Trivy, Grype, …). */
 function fromSarif(doc) {
   const raw = [];
+  const lockfiles = [];
   let tool = null;
   for (const run of list(doc.runs)) {
+    lockfiles.push(...list(run?.artifacts).map((a) => a?.location?.uri));
     const driver = run?.tool?.driver ?? {};
     tool ??= { name: driver.name, version: driver.semanticVersion ?? driver.version };
     const rules = new Map(list(driver.rules).map((r) => [r?.id, r]));
@@ -252,6 +265,7 @@ function fromSarif(doc) {
       const msg = fromLines(text);
       const help = fromLines(rule.help?.text);
       const uri = result.locations?.[0]?.physicalLocation?.artifactLocation?.uri;
+      lockfiles.push(uri);
       const tags = [...list(rule.properties?.tags), ...list(props.tags)];
       const level = result.level ?? rule.defaultConfiguration?.level;
       const severity =
@@ -284,7 +298,8 @@ function fromSarif(doc) {
       });
     }
   }
-  return { tool: tool ?? { name: null, version: null }, raw };
+  // SARIF lists no package inventory: the caller counts the findings' packages.
+  return { tool: tool ?? { name: null, version: null }, raw, components: 0, lockfiles };
 }
 
 /** 'sarif' or 'osv' for a parsed document, or null. */
@@ -309,14 +324,16 @@ const DROP_REASON = {
 };
 
 /**
- * The scanner's output (parsed JSON) → { payload, dropped }: the
- * dependency_scan v1 payload, and the findings it couldn't send as
- * { reasons: {why: count}, ids: [advisory ids, ≤ 10] }. `commit` is the
- * scanned commit (40 hex), `scannedAt` an ISO time. A finding with no
+ * The scanner's output (parsed JSON) → { payload, dropped, lockfiles }: the
+ * dependency_scan v2 payload (lockfile_sha256 null), the findings it
+ * couldn't send as { reasons: {why: count}, ids: [advisory ids, ≤ 10] } and
+ * the lockfile paths the scanner names. `commit` is the scanned commit (40
+ * hex), `scannedAt` an ISO time, `scannerVersion` (optional) the scanner's
+ * version, over the file's. A finding with no
  * severity is sent as high (never hidden as low); one whose fields don't fit
  * the schema is dropped and marks the scan truncated.
  */
-function reduce(doc, { format = 'auto', commit, scannedAt }) {
+function reduce(doc, { format = 'auto', commit, scannedAt, scannerVersion }) {
   const kind = format === 'auto' ? detect(doc) : format;
   // A forced format still needs its top-level shape: an empty read of the
   // wrong document would send a scan with no findings, read as clean.
@@ -336,7 +353,7 @@ function reduce(doc, { format = 'auto', commit, scannedAt }) {
     if (!(e instanceof TypeError)) throw e;
     throw new ActionError('results', `The results file isn't readable as ${kind === 'sarif' ? 'SARIF 2.1.0' : 'OSV-Scanner JSON'}.`);
   }
-  const { tool, raw } = read;
+  const { tool, raw, lockfiles } = read;
   const dropped = { reasons: {}, ids: [] };
   let droppedCount = 0;
   const byKey = new Map();
@@ -378,15 +395,20 @@ function reduce(doc, { format = 'auto', commit, scannedAt }) {
   const payload = {
     tool: {
       name: clean(tool.name, PATTERN.toolName, 64, kind === 'osv' ? 'osv-scanner' : 'unknown'),
-      version: clean(tool.version, PATTERN.toolVersion, 40, 'unknown'),
+      version: clean(scannerVersion || tool.version, PATTERN.toolVersion, 40, 'unknown'),
     },
     commit,
     scanned_at: scannedAt,
     counts,
     findings: findings.slice(0, MAX_FINDINGS),
     truncated: droppedCount > 0 || findings.length > MAX_FINDINGS,
+    // At least the packages it found something in (all of them, before the cut).
+    components: Math.min(MAX_COUNT, Math.max(read.components, new Set(findings.map((f) => `${f.ecosystem}#${f.package}#${f.version}`)).size)),
+    lockfile_sha256: null,
   };
-  return { payload, dropped: { count: droppedCount, ...dropped } };
+  // Only lockfile names: a path in the results file never makes the caller read another file.
+  const named = list(lockfiles).filter((p) => str(p) && ecosystemOfPath(p));
+  return { payload, dropped: { count: droppedCount, ...dropped }, lockfiles: [...new Set(named)] };
 }
 
 class ActionError extends Error {
@@ -396,4 +418,4 @@ class ActionError extends Error {
   }
 }
 
-module.exports = { reduce, detect, parsePurl, findPurl, fromScore, LEVEL, ActionError, MAX_FINDINGS };
+module.exports = { reduce, detect, parsePurl, findPurl, fromScore, LEVEL, ActionError, MAX_FINDINGS, MAX_COUNT, PATTERN };

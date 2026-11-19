@@ -16,13 +16,20 @@ const USAGE = `Usage: complyd-pipeline scan dependencies|sast --input <file> [op
        complyd-pipeline scan ai_eval --format <tool> --input <file> [options]
        complyd-pipeline deploy record --environment <env> --dry-run [--system <name>]
 
-Sends a scanner's results to Complyd (dependency_scan v1 or sast_scan v1), or
+Sends a scanner's results to Complyd (dependency_scan v2 or sast_scan v2), or
 an AI eval run's results (ai_eval v2: hashes, counts and metric values only).
 
   --input <path>        SARIF 2.1.0 or OSV-Scanner JSON (sast: SARIF; repeat it
                         or name a directory of .sarif files to merge them)
   --format <f>          auto (default), sarif or osv; for ai_eval: promptfoo,
                         deepeval, openai-evals, lm-eval or generic
+  --scanner-version <v> The scanner's version, over its output's (OSV-Scanner
+                        JSON names none), e.g. 2.7.1
+  --lockfile <path>     dependencies: the lockfile the scanner read; only its
+                        SHA-256 is sent. Default: the first one the scanner's
+                        output names that is on disk
+  --files-scanned <n>   sast: the number of files scanned, over the count the
+                        SARIF gives (Semgrep names only files with findings)
   --role <r>            ai_eval: candidate (default) or baseline
   --suite-config <path> ai_eval, deploy record: the AI config, relative to the
                         workspace. Default: .complyd/ai.yml
@@ -71,6 +78,9 @@ const OPTIONS = {
   'id-token-var': { type: 'string' },
   'api-url': { type: 'string' },
   'insecure-local-api': { type: 'boolean' },
+  'scanner-version': { type: 'string' },
+  lockfile: { type: 'string' },
+  'files-scanned': { type: 'string' },
   role: { type: 'string', default: 'candidate' },
   'suite-config': { type: 'string', default: DEFAULT_CONFIG },
   'dry-run': { type: 'boolean' },
@@ -300,6 +310,9 @@ function options(kind, values, env, { fetchImpl = fetch, sleep } = {}) {
     apiUrl,
     trust: auth.trust,
     getToken: auth.getToken,
+    scannerVersion: first(values['scanner-version']),
+    lockfile: first(values.lockfile),
+    filesScanned: first(values['files-scanned']),
   };
 }
 
@@ -339,10 +352,11 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
       else for (const line of aiSummary(r)) out(line);
       return 0;
     }
-    const { answer, payload, dropped } = await scan(options(kind, values, env, deps), deps);
+    const { answer, payload, dropped, unproven } = await scan(options(kind, values, env, deps), deps);
     const [sent, stored] = summary({ answer, payload });
     out(sent);
     if (dropped.count) err(`warning: ${droppedLine(dropped)}`);
+    if (unproven) err(`warning: ${unproven}`);
     out(stored);
     return 0;
   } catch (e) {

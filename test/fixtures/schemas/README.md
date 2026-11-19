@@ -18,3 +18,20 @@ output against these files with Complyd's own validator settings
 `../repo-config-ownership.vectors.json` is copied the same way from
 `apps/api/src/ai-releases/domain/` (same commit): the file-ownership cases
 both sides test against.
+
+`dependency_scan.v2.schema.json` and `sast_scan.v2.schema.json` are copied
+the same way from `apps/api/src/observations/collectors/complyd_ci_scan/`,
+branch `fix/ci-scan-severity` at `31ef38f0b` (PR #949, 20 Nov 2026),
+unchanged; their SHA-256s match the ones Complyd's collector registers:
+
+| File | SHA-256 |
+|---|---|
+| `dependency_scan.v2.schema.json` | `dc22d15a46d22799ff0863a3ddfd524eb1a55488b92f3dc20d3d653d7c7af205` |
+| `sast_scan.v2.schema.json` | `6a431f7ea861de7d2debc0c8776a2a67e089320f536dd389abd813ddb2ceba2e` |
+
+v2 adds `components` and `lockfile_sha256` (dependency) and `files` (SAST);
+Complyd still takes v1 but reads it as "Couldn't check". `test/run.test.js`
+and `test/reduce.test.js` validate the action's payloads against them. The
+scanner names Complyd counts a scan from (its `DEPENDENCY_SCANNERS` and
+`SAST_SCANNERS`, same commit) are copied into `src/scan.js`
+(`KNOWN_SCANNERS`), used only for the step's warning.
