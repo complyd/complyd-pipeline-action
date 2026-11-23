@@ -1,0 +1,29 @@
+# Complyd pipeline
+
+> GitHub Action (and `complyd-pipeline` CLI for other CIs) that sends a dependency scan (OSV-Scanner JSON or SARIF), a SAST scan (SARIF from CodeQL, Semgrep) or AI eval results to Complyd, signed in with the workflow's OIDC token: no secrets.
+
+Pin it as `uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0` with `permissions: id-token: write`. The trust id comes from Complyd's Settings › Workload trusts.
+
+## Docs
+
+- [Set up with your AI assistant](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#set-up-with-your-ai-assistant): copy-paste prompt for coding assistants
+- [Set up](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#set-up): dependency scan workflow with OSV-Scanner
+- [SAST scans](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#sast-scans): CodeQL and Semgrep
+- [AI release](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#ai-release): `scan: ai_eval` and `.complyd/ai.yml`
+- [Inputs](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#inputs): every input and output
+- [What Complyd receives](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#what-complyd-receives): exactly what is sent
+- [Errors](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#errors): failure messages and fixes
+- [action.yml](https://github.com/complyd/complyd-pipeline-action/blob/main/action.yml): the action's inputs, authoritative
+- [SECURITY.md](https://github.com/complyd/complyd-pipeline-action/blob/main/SECURITY.md): security policy and data handling
+
+## Examples
+
+- [GitHub Actions: dependency scan](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#set-up)
+- [GitHub Actions: CodeQL SAST](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#sast-scans)
+- [GitHub Actions: promptfoo eval](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#github-actions)
+- [GitLab CI](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#gitlab-ci), [CircleCI](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#circleci), [Bitbucket Pipelines](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#bitbucket-pipelines), [Jenkins](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#jenkins), [AWS CodeBuild](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#aws-codebuild), [Azure DevOps](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#azure-devops)
+
+## Optional
+
+- [AGENTS.md](https://github.com/complyd/complyd-pipeline-action/blob/main/AGENTS.md): for agents contributing to this repository
+- [RELEASING.md](https://github.com/complyd/complyd-pipeline-action/blob/main/RELEASING.md): release process
