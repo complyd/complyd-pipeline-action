@@ -15,6 +15,21 @@ refuses them. The tests (`test/ai.test.js`) validate the action's dry-run
 output against these files with Complyd's own validator settings
 (`test/schemas.js`). When Complyd changes a schema, copy the new file here.
 
+`ai_eval.v3.schema.json` and `ai_release.v3.schema.json` are copied the same
+way from Complyd's API `develop` at `0ce8e9b7f` (PR #1048, 24 Nov 2026),
+unchanged; their SHA-256s match the ones Complyd's collector registers:
+
+| File | SHA-256 |
+|---|---|
+| `ai_eval.v3.schema.json` | `2ffae16b06b6cff8d8d69ccd0f8df624df2daeabefdd7aa3570f20ac2804cdad` |
+| `ai_release.v3.schema.json` | `ffa8b730bf1851b51435ea242012104c3ca2ad729f002095730de491f75339f8` |
+
+v3 is v2 plus, per suite, `execution` (`live`, `scripted`, `replay`) and
+`usage`, and `execution` on `repo_config` suites. The action sends v3 only
+when a payload states one of them, and v2 otherwise (byte for byte what it
+sent before), so the tests validate each payload against the version its
+envelope names.
+
 `../repo-config-ownership.vectors.json` is copied the same way from
 `apps/api/src/ai-releases/domain/` (same commit): the file-ownership cases
 both sides test against.

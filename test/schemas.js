@@ -13,7 +13,7 @@ ajv.addFormat('date-time', {
   type: 'string',
   validate: (v) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/.test(v) && !Number.isNaN(Date.parse(v)),
 });
-for (const name of ['ai_eval.v2', 'ai_release.v2', 'dependency_scan.v2', 'sast_scan.v2']) ajv.addSchema(JSON.parse(readFileSync(join(__dirname, 'fixtures', 'schemas', `${name}.schema.json`), 'utf8')), name);
+for (const name of ['ai_eval.v2', 'ai_release.v2', 'ai_eval.v3', 'ai_release.v3', 'dependency_scan.v2', 'sast_scan.v2']) ajv.addSchema(JSON.parse(readFileSync(join(__dirname, 'fixtures', 'schemas', `${name}.schema.json`), 'utf8')), name);
 
 /** Asserts `value` is valid under schema `ref` (e.g. ai_release.v2, ai_eval.v2#/$defs/repo_config); returns Ajv's errors otherwise. */
 function assertValid(ref, value) {

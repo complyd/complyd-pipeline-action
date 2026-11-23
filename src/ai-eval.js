@@ -2,7 +2,7 @@
 
 const { createHash } = require('crypto');
 const { ActionError } = require('./reduce');
-const { hashFile, hashFiles, isModelId, isJudge, repoConfig, decimal, PROVIDER, MODEL_VERSION } = require('./ai-config');
+const { hashFile, hashFiles, isModelId, isJudge, repoConfig, decimal, EXECUTIONS, PROVIDER, MODEL_VERSION } = require('./ai-config');
 const { MAX_BODY_BYTES } = require('./post');
 
 const FORMATS = ['promptfoo', 'deepeval', 'openai-evals', 'lm-eval', 'generic'];
@@ -15,6 +15,10 @@ const MAX_WARNINGS = 20;
 const TOOL_NAME = /^[A-Za-z0-9._/@+-]{1,40}$/;
 const TOOL_VERSION = /^[A-Za-z0-9._+-]{1,40}$/;
 const DECIMAL = /^-?[0-9]{1,12}(\.[0-9]{1,9})?$/;
+/** Complyd's usage caps: token and call counts up to 10^12, cost a decimal of ≤ 8 integer and ≤ 6 fraction digits. */
+const MAX_TOKENS = 1e12;
+const COST = /^[0-9]{1,8}(\.[0-9]{1,6})?$/;
+const USAGE_KEYS = ['calls', 'input_tokens', 'output_tokens', 'cached_input_tokens', 'cost_usd'];
 
 /*
  * Each parser reads a tool's results document and keeps only numbers, model
@@ -45,6 +49,44 @@ const isoTime = (v) => {
 /** A metric name the schema takes: other characters become '-'. */
 const metricName = (s) => String(s).replace(/[^A-Za-z0-9 ._:/@+-]/g, '-').slice(0, 64) || 'metric';
 const rate = (part, total) => (total > 0 ? part / total : undefined);
+const tokens = (v) => (Number.isInteger(v) && v >= 0 && v <= MAX_TOKENS ? v : undefined);
+/** A non-negative USD figure as the schema's string (rounded to the micro-dollar), else undefined. */
+const cost = (v) => {
+  if (typeof v === 'string') return COST.test(v) ? v : undefined;
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v >= 1e8) return undefined;
+  return v.toFixed(6).replace(/\.?0+$/, '') || '0';
+};
+/** A usage object without the fields left out; undefined when none is left ("usage not reported"). */
+const usageOf = (u) => {
+  const out = Object.fromEntries(Object.entries(u).filter(([, v]) => v !== undefined));
+  return Object.keys(out).length ? out : undefined;
+};
+
+/**
+ * promptfoo's usage of the target (never its graders, under `assertions`).
+ * `incurredTokenUsage` (written once a response came from promptfoo's cache)
+ * counts only calls made in this run; the top level also counts cached
+ * replies. A cache hit without it (an older promptfoo) can't be split: no
+ * usage. promptfoo writes 0 for what a provider didn't report, so a 0 cost,
+ * 0 cache reads or 0 tokens on calls made are left out, not sent as 0.
+ */
+function promptfooUsage(m) {
+  const top = isMap(m.tokenUsage) ? m.tokenUsage : undefined;
+  if (!top) return undefined;
+  const hit = (num(m.testCacheHitCount) ?? 0) > 0 || (num(top.cached) ?? 0) > 0;
+  const u = isMap(top.incurredTokenUsage) ? top.incurredTokenUsage : hit ? undefined : top;
+  if (!u) return undefined;
+  const calls = tokens(u.numRequests);
+  const reported = (num(u.prompt) ?? 0) + (num(u.completion) ?? 0) > 0 || calls === 0;
+  const spent = num(isMap(top.incurredTokenUsage) ? m.incurredCost : hit ? undefined : m.cost);
+  return usageOf({
+    calls,
+    input_tokens: reported ? tokens(u.prompt) : undefined,
+    output_tokens: reported ? tokens(u.completion) : undefined,
+    cached_input_tokens: tokens(u.completionDetails?.cacheReadInputTokens) || undefined,
+    cost_usd: spent ? cost(spent) : undefined,
+  });
+}
 
 /** "openai:chat:gpt-4o" → { provider: openai, id: gpt-4o }; undefined for files, URLs and scripts. */
 function providerModel(s) {
@@ -79,6 +121,7 @@ function promptfoo(doc) {
         metrics,
         cases,
         passed: cases.failed + cases.errored === 0,
+        usage: promptfooUsage(m),
       };
     }),
   };
@@ -134,6 +177,20 @@ function deepeval(doc) {
   };
 }
 
+/**
+ * An OpenAI Evals run's `per_model_usage` rows named exactly after the model
+ * under test (`id`, or the run's `data_source.model`). None matching (say a
+ * dated snapshot name against an alias): no usage, never 0. A grader on the
+ * same model shares its row, so its calls may be counted in.
+ */
+function openaiUsage(run, id) {
+  const ids = new Set([id, run.data_source?.model].filter((x) => typeof x === 'string'));
+  const rows = (Array.isArray(run.per_model_usage) ? run.per_model_usage : []).filter((u) => isMap(u) && ids.has(u.model_name));
+  if (!rows.length) return undefined;
+  const sum = (k) => (rows.every((u) => tokens(u[k]) !== undefined) ? tokens(rows.reduce((a, u) => a + u[k], 0)) : undefined);
+  return usageOf({ calls: sum('invocation_count'), input_tokens: sum('prompt_tokens'), output_tokens: sum('completion_tokens'), cached_input_tokens: sum('cached_tokens') });
+}
+
 /** An OpenAI Evals API run (`GET /v1/evals/{id}/runs/{run_id}`), or a list of them. */
 function openaiEvals(doc) {
   const runs = doc?.object === 'list' && Array.isArray(doc.data) ? doc.data : [doc];
@@ -156,6 +213,8 @@ function openaiEvals(doc) {
         metrics,
         cases,
         passed: r.status === 'completed' && cases.failed + cases.errored === 0,
+        // Per model, graders included: buildPayload keeps the rows of the model under test.
+        usageFor: (id) => openaiUsage(r, id),
       };
     }),
   };
@@ -194,6 +253,25 @@ function lmEval(doc) {
   };
 }
 
+/** The generic format's `usage` as stated, refused (not dropped) when a field is out of shape. */
+function genericUsage(u, where) {
+  if (u === undefined || u === null) return undefined;
+  const wrong = (why) => new ActionError('results', `The results file's ${where}.usage${why}.`);
+  if (!isMap(u)) throw wrong(` must be an object with ${USAGE_KEYS.join(', ')}`);
+  for (const k of Object.keys(u)) if (!USAGE_KEYS.includes(k)) throw wrong(` has an unknown key ${JSON.stringify(k).slice(0, 40)} (expected ${USAGE_KEYS.join(', ')})`);
+  const out = {};
+  for (const k of USAGE_KEYS.slice(0, 4)) {
+    if (u[k] === undefined) continue;
+    if (tokens(u[k]) === undefined) throw wrong(`.${k} must be a whole number from 0 to 1000000000000`);
+    out[k] = u[k];
+  }
+  if (u.cost_usd !== undefined) {
+    out.cost_usd = cost(u.cost_usd);
+    if (out.cost_usd === undefined) throw wrong('.cost_usd must be the cost in US dollars, e.g. "4.12" (at most 8 digits before the point and 6 after)');
+  }
+  return usageOf(out);
+}
+
 /** Complyd's generic shape, for any other harness (see the README). */
 function generic(doc) {
   if (!doc || !Array.isArray(doc.suites) || !doc.suites.length) throw bad('generic');
@@ -201,8 +279,11 @@ function generic(doc) {
   return {
     tool: { name, version: cleanVersion(doc.tool?.version) },
     ranAt: isoTime(doc.ran_at),
-    suites: doc.suites.map((s) => {
+    suites: doc.suites.map((s, i) => {
       if (!s || typeof s.name !== 'string' || !Array.isArray(s.metrics ?? []) || (s.cases !== undefined && !isMap(s.cases))) throw bad('generic');
+      if (s.execution !== undefined && s.execution !== null && !EXECUTIONS.includes(s.execution)) {
+        throw new ActionError('results', `The results file's suites[${i}].execution must be ${EXECUTIONS.join(', ')} (leave it out when the harness doesn't know).`);
+      }
       const c = s.cases ?? {};
       const m = isMap(s.model) ? s.model : {};
       const cases = { total: count(c.total, 'generic'), passed: count(c.passed, 'generic'), failed: count(c.failed, 'generic'), errored: count(c.errored, 'generic') };
@@ -225,6 +306,8 @@ function generic(doc) {
           })),
         cases,
         passed: typeof s.passed === 'boolean' ? s.passed : cases.failed + cases.errored === 0,
+        execution: s.execution ?? undefined,
+        usage: genericUsage(s.usage, `suites[${i}]`),
       };
     }),
   };
@@ -238,7 +321,8 @@ const meets = (v, t) => (t.direction === 'gte' ? v >= t.value : v <= t.value);
 const shown = (label, i) => (typeof label === 'string' && /^[A-Za-z0-9._:/@+-]{1,64}$/.test(label) ? `"${label}"` : `#${i + 1} (unnamed)`);
 
 /**
- * The parsed results + the config → ai_eval v2 payload. Each result suite
+ * The parsed results + the config → ai_eval payload (v2, or v3 when a suite
+ * states its execution or usage: schemaVersion in ai-config). Each result suite
  * is matched to a config suite by `match:` (else `name:`), or to the only
  * suite when there is one and the results carry one label. Only metrics the
  * suite declares under `metrics:` (and `pass_rate`) are sent. Warnings go to
@@ -273,6 +357,13 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
       errors.push(`${where}.model: the results don't name the model (provider and id): set model: { provider: …, id: … }`);
       return;
     }
+    // ai.yml's execution is the default; results may move a run away from live, never to it.
+    if (t.execution === 'live' && c.execution && c.execution !== 'live') {
+      errors.push(`the results say suite ${c.name} ran live, but ${where}.execution in .complyd/ai.yml says ${c.execution}: change .complyd/ai.yml if it now calls the model`);
+      return;
+    }
+    const execution = t.execution ?? c.execution;
+    const usage = t.usage ?? t.usageFor?.(model.id);
     const dataset = c.dataset ? { ...c.datasetDef } : undefined;
     const datasetSha = dataset && hashFile(root, dataset.path, `${c.prefix}datasets.${c.dataset}.path`, hashes);
     let judge = c.evaluator.judge_model;
@@ -350,6 +441,8 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
       metrics: metrics.slice(0, MAX_METRICS),
       cases: t.cases,
       passed: suitePassed,
+      ...(execution ? { execution } : {}),
+      ...(usage ? { usage } : {}),
     });
   });
   if (errors.length) throw new ActionError('config', errors.slice(0, 5).join('; ') + '.');
