@@ -6,6 +6,7 @@ Pin it as `uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822
 
 ## Docs
 
+- [README.md](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/README.md): the whole README as raw markdown
 - [Set up with your AI assistant](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#set-up-with-your-ai-assistant): copy-paste prompt for coding assistants
 - [Set up](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#set-up): dependency scan workflow with OSV-Scanner
 - [SAST scans](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#sast-scans): CodeQL and Semgrep
@@ -13,8 +14,8 @@ Pin it as `uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822
 - [Inputs](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#inputs): every input and output
 - [What Complyd receives](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#what-complyd-receives): exactly what is sent
 - [Errors](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#errors): failure messages and fixes
-- [action.yml](https://github.com/complyd/complyd-pipeline-action/blob/main/action.yml): the action's inputs, authoritative
-- [SECURITY.md](https://github.com/complyd/complyd-pipeline-action/blob/main/SECURITY.md): security policy and data handling
+- [action.yml](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/action.yml): the action's inputs, authoritative
+- [SECURITY.md](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/SECURITY.md): security policy and data handling
 
 ## Examples
 
@@ -25,5 +26,5 @@ Pin it as `uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822
 
 ## Optional
 
-- [AGENTS.md](https://github.com/complyd/complyd-pipeline-action/blob/main/AGENTS.md): for agents contributing to this repository
-- [RELEASING.md](https://github.com/complyd/complyd-pipeline-action/blob/main/RELEASING.md): release process
+- [AGENTS.md](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/AGENTS.md): for agents contributing to this repository
+- [RELEASING.md](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/RELEASING.md): release process

@@ -87,8 +87,7 @@ can publish.
 
 ## 4. After publishing
 
-Update README's "Other CI systems" install lines from
-`github:complyd/complyd-pipeline-action#<commit SHA>` to
-`npm install --global @complyd/pipeline@X.Y.Z` and the image. In 1.2.0,
-remove the deprecated `complyd-ci-scan` bin (`src/ci-scan.js` and its
-`package.json` entry).
+In a follow-up PR, replace the previous release SHA with the new one
+everywhere (`grep -rn <old sha> README.md llms.txt`), so no pin goes stale.
+Update README's "Other CI systems" install lines to
+`npm install --global @complyd/pipeline@X.Y.Z` and the image.
