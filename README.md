@@ -33,8 +33,10 @@ in this repository. Read its README first; follow it, don't guess.
 1. Create .github/workflows/complyd-scan.yml with:
    - on: push to the default branch, a daily schedule (cron), and workflow_dispatch.
      Complyd accepts runs on the default branch only.
-   - permissions: id-token: write and contents: read. Nothing else.
-   - actions/checkout pinned to a full commit SHA, with persist-credentials: false.
+   - permissions: id-token: write and contents: read. Nothing else, except
+     security-events: write if (and only if) you add the CodeQL SAST option below.
+   - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+     with persist-credentials: false.
    - Every Complyd step pinned exactly as:
      uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0
      with trust: ${{ vars.COMPLYD_TRUST }} and audience: ${{ vars.COMPLYD_AUDIENCE }}
@@ -44,10 +46,14 @@ in this repository. Read its README first; follow it, don't guess.
      pinned to 32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1, continue-on-error: true,
      scan-args --format=json --output=osv-results.json --all-packages --recursive ./
      Then the Complyd step with results: osv-results.json and scanner-version: 2.7.1.
-   - SAST (source code): run Semgrep with
-     semgrep scan --config auto --sarif-output semgrep.sarif --json-output semgrep.json
-     Then the Complyd step with scan: sast, results: semgrep.sarif and
-     files-scanned set from jq '.paths.scanned | length' semgrep.json.
+   - SAST (source code), one scanner only. If the repo already runs CodeQL, send its
+     SARIF directory instead (README "SAST scans"). Otherwise install Semgrep pinned
+     (pipx install semgrep==1.185.0, the version the test fixtures come from) and run
+     semgrep scan --config p/default --metrics=off --sarif-output semgrep.sarif --json-output semgrep.json
+     (not --config auto: it needs metrics on, which send the project URL to semgrep.dev).
+     Then the Complyd step with scan: sast, results: semgrep.sarif and files-scanned
+     from a step with an id: echo "n=$(jq '.paths.scanned | length' semgrep.json)" >> "$GITHUB_OUTPUT",
+     used as files-scanned: ${{ steps.<id>.outputs.n }}.
    - AI evals, only if the repo already runs promptfoo, DeepEval, OpenAI Evals or
      lm-evaluation-harness: the Complyd step with scan: ai_eval, the matching format
      (promptfoo, deepeval, openai-evals, lm-eval) and input: the tool's results file.
@@ -55,7 +61,8 @@ in this repository. Read its README first; follow it, don't guess.
    Only use inputs listed in the action's action.yml.
 3. Never add a secret, token or API key: the action signs in with the job's OIDC token.
 4. Tell me what to do in Complyd, since you can't: open Settings › Workload trusts ›
-   Create trust, tick "Complyd CI scan" (and "Complyd AI release" for AI evals), enter
+   Create trust, tick "Complyd CI scan" (and "Complyd AI release" for AI evals), keep
+   the workflow events push, schedule and workflow_dispatch ticked (the defaults), enter
    the owner id and repository id from
    gh api repos/OWNER/REPO --jq '.owner.id, .id'
    and the default branch, then copy the trust id (trw_…) and audience it shows into
