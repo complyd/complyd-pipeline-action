@@ -46,6 +46,16 @@ Once the workflow is green, move `v1` to the release commit and publish the
 release notes with the commit SHA and the image digest (the job summary
 shows it), so users can pin `ghcr.io/complyd/pipeline@sha256:…`.
 
+Release notes for 1.4.0 must also say:
+
+- promptfoo and openai-evals users move to `ai_eval` v3 automatically
+  (the action now sends the usage those tools report), with no change to
+  `.complyd/ai.yml`. Don't tag 1.4.0 until Complyd's API that accepts v3 is
+  deployed, or those pushes are refused once `v1` moves.
+- In the generic format, `usage` and `execution` keys are now validated: a
+  harness that already wrote them in another shape fails the step instead
+  of having them ignored.
+
 The `Dockerfile` pins its base image by digest. Refresh the digest with each
 release (the command is in the Dockerfile's comment: the registry's
 `docker-content-digest` for the `nonroot` tag).
@@ -91,3 +101,9 @@ In a follow-up PR, replace the previous release SHA with the new one
 everywhere (`grep -rn <old sha> README.md llms.txt`), so no pin goes stale.
 Update README's "Other CI systems" install lines to
 `npm install --global @complyd/pipeline@X.Y.Z` and the image.
+
+When this bumps the pin to 1.4.0, also remove the "from v1.4.0" notes
+(`grep -n 'v1.4.0' README.md llms.txt SECURITY.md`), including the "not
+released yet" paragraph under "How a suite ran" and the AI-setup prompt's
+"Don't add execution: … while the pin above is v1.3.0" (keep its advice on
+when to set `execution:`).

@@ -1038,6 +1038,20 @@ test('promptfoo 0.126 (real output): calls and tokens of the target; a cache hit
   Object.assign(m.tokenUsage, { numRequests: 0 });
   assert.deepEqual(buildWith('promptfoo', quiet, cfg).suites[0].usage, { calls: 0, input_tokens: 0, output_tokens: 0 });
   assert.doesNotMatch(JSON.stringify(fresh), /CANARY/);
+
+  // promptfoo ran another model than ai.yml names: its usage isn't that model's, so it is left out with a warning.
+  const other = fixture('promptfoo-0.126.real');
+  other.results.prompts[0].provider = 'openai:gpt-4o';
+  const warnings = [];
+  const parsed = PARSERS.promptfoo(other);
+  const opts = { format: 'promptfoo', role: 'candidate', commit: SHA, runId: 'gitlab-555', ranAt: '2026-11-19T08:00:00.000Z', root: REPO, warn: (w) => warnings.push(w) };
+  const mismatch = buildPayload(parsed, cfg, opts);
+  assert.equal(Object.hasOwn(mismatch.suites[0], 'usage'), false);
+  assert.equal(mismatch.suites[0].execution, 'live');
+  assert.ok(warnings.some((w) => /usage was left out/.test(w)), warnings.join('\n'));
+  // Same id: kept.
+  other.results.prompts[0].provider = 'openai:gpt-4o-mini';
+  assert.equal(buildPayload(PARSERS.promptfoo(other), cfg, opts).suites[0].usage.calls, 3);
 });
 
 test('openai-evals: only per_model_usage rows named after the model under test; none matching, no usage', () => {
@@ -1063,6 +1077,10 @@ test('generic: execution and usage as stated; a push moves a run away from live,
   assert.deepEqual([p.suites[0].execution, p.suites[0].usage], ['live', usage]);
   // A number cost is the tool's figure, to the micro-dollar.
   assert.equal(buildWith('generic', genericDoc({ usage: { cost_usd: 0.1234567 } }), config()).suites[0].usage.cost_usd, '0.123457');
+  // A positive cost under half a micro-dollar is left out, not sent as "0"; a stated 0 stays.
+  assert.deepEqual(buildWith('generic', genericDoc({ usage: { calls: 1, cost_usd: 1e-7 } }), config()).suites[0].usage, { calls: 1 });
+  assert.equal(buildWith('generic', genericDoc({ usage: { cost_usd: 0 } }), config()).suites[0].usage.cost_usd, '0');
+  assert.equal(buildWith('generic', genericDoc({ usage: { cost_usd: 99999999.999999 } }), config()).suites[0].usage.cost_usd, '99999999.999999');
   // An empty usage is "not reported".
   assert.equal(schemaVersion(buildWith('generic', genericDoc({ usage: {} }), config())), 2);
 
@@ -1082,6 +1100,8 @@ test('generic: execution and usage as stated; a push moves a run away from live,
     [{ usage: { calls: 1e12 + 1 } }, /usage\.calls must be a whole number/],
     [{ usage: { cost_usd: '4,12' } }, /usage\.cost_usd must be the cost/],
     [{ usage: { cost_usd: -1 } }, /usage\.cost_usd must be the cost/],
+    // Rounds up to 10^8, which Complyd's schema refuses.
+    [{ usage: { cost_usd: 99999999.9999999 } }, /usage\.cost_usd must be the cost/],
     [{ usage: { total_tokens: 5 } }, /usage has an unknown key "total_tokens"/],
     [{ usage: [1] }, /usage must be an object/],
   ]) {
