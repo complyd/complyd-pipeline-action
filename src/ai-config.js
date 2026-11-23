@@ -21,12 +21,14 @@ const MODEL_ID = /^[A-Za-z0-9._:/@+-]{1,128}$/;
 const MODEL_VERSION = /^[A-Za-z0-9._:/@+-]{1,64}$/;
 const METRIC = /^[A-Za-z0-9 ._:/@+-]{1,64}$/;
 const SELECTIONS = ['production_sample', 'curated', 'synthetic', 'regression', 'mixed'];
+/** How a suite's run called the model; `unknown` is Complyd's word for "not stated", never sent. */
+const EXECUTIONS = ['live', 'scripted', 'replay'];
 const MAX_SUITES = 50;
 const MAX_SYSTEMS = 50;
 const MAX_GLOBS = 100;
 const GLOB = /^[A-Za-z0-9 ._@+\/*?-]{1,200}$/;
 /** What one system (v1: the file) may set besides its name and paths. */
-const SYSTEM_KEYS = ['model', 'prompts', 'safety', 'datasets', 'retrieval', 'tools', 'product_config', 'eval_method', 'suites'];
+const SYSTEM_KEYS = ['model', 'prompts', 'safety', 'datasets', 'retrieval', 'tools', 'product_config', 'eval_method', 'execution', 'suites'];
 /** A model id that is not a URL or a local path (those can name internal hosts or home directories). */
 const isModelId = (s) => typeof s === 'string' && MODEL_ID.test(s) && !s.includes('//') && !/^[/.~]/.test(s) && !/^[A-Za-z]:\//.test(s);
 const JUDGE = /^[A-Za-z0-9._:/@+-]{1,200}$/;
@@ -83,6 +85,12 @@ function validate(doc) {
     return segs.filter((x, i) => x !== '**' || segs[i - 1] !== '**').join('/');
   };
 
+  const execution = (v, where) => {
+    if (v === undefined || v === null) return undefined;
+    if (!EXECUTIONS.includes(v)) return bad(where, `set ${EXECUTIONS.join(', ')} (leave it out when you don't know: Complyd shows the run as not stated)`);
+    return v;
+  };
+
   /** { provider, id, version } of a model: map `m` at `where`. */
   const modelRef = (m, where) => {
     const provider = str(m.provider, `${where}.provider`, PROVIDER, 'openai');
@@ -92,10 +100,11 @@ function validate(doc) {
     return { provider, id, version: str(m.version, `${where}.version`, MODEL_VERSION, '2024-07-18') };
   };
 
-  /** One system's settings (v1: the whole file); `p` prefixes each error's place. */
-  function system(doc, p) {
+  /** One system's settings (v1: the whole file); `p` prefixes each error's place; `defaultExecution` is the file's (v2). */
+  function system(doc, p, defaultExecution) {
     declared = [];
     const cfg = {};
+    cfg.execution = execution(doc.execution, `${p}execution`) ?? defaultExecution;
     cfg.model = { files: [], keys: [] };
     if (doc.model !== undefined) {
       if (!isMap(doc.model)) bad(`${p}model`, 'set provider: and id: (the deployed model) and/or files: (and optionally keys:)');
@@ -150,7 +159,7 @@ function validate(doc) {
       doc.suites.forEach((s, i) => {
         const where = `${p}suites[${i}]`;
         if (!isMap(s)) return bad(where, 'expected name: and the suite settings');
-        known(s, `${where}.`, ['name', 'match', 'required', 'prompts', 'prompt_version', 'dataset', 'model', 'test_set', 'evaluator', 'metrics', 'files']);
+        known(s, `${where}.`, ['name', 'match', 'required', 'execution', 'prompts', 'prompt_version', 'dataset', 'model', 'test_set', 'evaluator', 'metrics', 'files']);
         const suite = { index: i, prefix: p };
         suite.name = str(s.name, `${where}.name`, NAME, 'safety-refusals');
         if (!suite.name) bad(`${where}.name`, 'set a name (letters, digits, spaces and . _ : / @ + -)');
@@ -160,6 +169,7 @@ function validate(doc) {
         suite.match = s.match;
         if (s.required !== undefined && typeof s.required !== 'boolean') bad(`${where}.required`, 'set true or false');
         suite.required = s.required === true;
+        suite.execution = execution(s.execution, `${where}.execution`) ?? cfg.execution;
         suite.prompts = s.prompts === undefined ? cfg.prompts : paths(s.prompts, `${where}.prompts`);
         if (!suite.prompts.length) bad(`${where}.prompts`, 'list the prompt files this suite tests (or a top-level prompts:)');
         suite.prompt_version = str(s.prompt_version, `${where}.prompt_version`, REF, 'v12');
@@ -241,7 +251,8 @@ function validate(doc) {
   const names = new Set();
   let out;
   if (doc.version === 2) {
-    known(doc, '', ['version', 'systems']);
+    known(doc, '', ['version', 'execution', 'systems']);
+    const fileExecution = execution(doc.execution, 'execution');
     const list = Array.isArray(doc.systems) ? doc.systems : [];
     if (!list.length || list.length > MAX_SYSTEMS) bad('systems', `list your AI systems (1 to ${MAX_SYSTEMS}), each with system:, paths: and suites:`);
     const systems = [];
@@ -252,7 +263,7 @@ function validate(doc) {
       const p = `systems[${i}].`;
       if (!isMap(d)) return bad(`systems[${i}]`, 'expected system:, paths: and the system settings');
       known(d, p, ['system', 'paths', ...SYSTEM_KEYS]);
-      const cfg = system(d, p);
+      const cfg = system(d, p, fileExecution);
       files.push(declared);
       cfg.system = str(d.system, `${p}system`, NAME, 'support-assistant');
       if (!cfg.system) bad(`${p}system`, "set the system's name or its AIS-… reference");
@@ -388,6 +399,7 @@ function repoConfig(cfg) {
       suites: s.suites.map((x) => ({
         name: x.name,
         required: x.required,
+        ...(x.execution ? { execution: x.execution } : {}),
         metrics: Object.fromEntries(
           Object.entries(x.metrics)
             .filter(([, m]) => m.threshold)
@@ -397,6 +409,14 @@ function repoConfig(cfg) {
     })),
   };
 }
+
+/**
+ * The ai_eval / ai_release schema version a payload needs: 3 when it states
+ * a suite's execution or usage, else 2, so a pipeline that
+ * states neither sends exactly what it did before.
+ */
+const schemaVersion = (payload) =>
+  payload.suites?.some((s) => s.execution || s.usage) || payload.repo_config?.systems.some((sys) => sys.suites.some((s) => s.execution)) ? 3 : 2;
 
 /**
  * `path` under `root` with symlinks resolved, or null when it doesn't resolve
@@ -456,4 +476,4 @@ function hashFiles(root, files, where, cache) {
   return sha256(list.map((p) => `${hashFile(root, p, where, cache)}  ${p}\n`).join(''));
 }
 
-module.exports = { parseConfig, loadConfig, validate, repoConfig, ownerOf, globMatch, decimal, hashFile, hashFiles, sha256, isModelId, isJudge, DEFAULT_CONFIG, NAME, REF, PROVIDER, MODEL_ID, MODEL_VERSION, METRIC };
+module.exports = { parseConfig, loadConfig, validate, repoConfig, schemaVersion, EXECUTIONS, ownerOf, globMatch, decimal, hashFile, hashFiles, sha256, isModelId, isJudge, DEFAULT_CONFIG, NAME, REF, PROVIDER, MODEL_ID, MODEL_VERSION, METRIC };

@@ -9,7 +9,7 @@ const { oidcToken, allowedApiUrl, audienceAllowed, envelope, MAX_BODY_BYTES } = 
 const { scan, scanAi, aiSummary, summary, droppedLine, errorLine, escape } = require('./scan');
 const { FORMATS, ROLES, overCap } = require('./ai-eval');
 const { deployRecord } = require('./ai-release');
-const { DEFAULT_CONFIG } = require('./ai-config');
+const { DEFAULT_CONFIG, schemaVersion } = require('./ai-config');
 const { version } = require('../package.json');
 
 const USAGE = `Usage: complyd-pipeline scan dependencies|sast --input <file> [options]
@@ -17,7 +17,8 @@ const USAGE = `Usage: complyd-pipeline scan dependencies|sast --input <file> [op
        complyd-pipeline deploy record --environment <env> --dry-run [--system <name>]
 
 Sends a scanner's results to Complyd (dependency_scan v2 or sast_scan v2), or
-an AI eval run's results (ai_eval v2: hashes, counts and metric values only).
+an AI eval run's results (ai_eval v2, or v3 with execution or usage: hashes,
+counts, metric values and reported usage only).
 
   --input <path>        SARIF 2.1.0 or OSV-Scanner JSON (sast: SARIF; repeat it
                         or name a directory of .sarif files to merge them)
@@ -332,9 +333,9 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
       const root = first(values.workspace) ?? process.cwd();
       const now = deps.now ?? (() => new Date());
       const rec = deployRecord({ environment: values.environment, system: values.system, root, configPath: values['suite-config'], now, warn: (w) => err(`warning: ${w}`) });
-      // v2: every record carries repo_config and config_changed, which v1 refuses.
+      // v2: every record carries repo_config and config_changed, which v1 refuses; v3 when repo_config states an execution.
       const wrap = (payload) => {
-        const env = envelope(payload, { id: `ci-${randomUUID().replace(/-/g, '')}-ai_release`, subject: first(values.repo) ?? 'dry-run', observedAt: payload.released_at, schema: 'ai_release', collector: 'complyd_ai_release', schemaVersion: 2 });
+        const env = envelope(payload, { id: `ci-${randomUUID().replace(/-/g, '')}-ai_release`, subject: first(values.repo) ?? 'dry-run', observedAt: payload.released_at, schema: 'ai_release', collector: 'complyd_ai_release', schemaVersion: schemaVersion(payload) });
         // The same 64 KiB cap as a sent scan, repo_config included.
         if (Buffer.byteLength(JSON.stringify(env)) > MAX_BODY_BYTES) throw overCap({ ...env, payload: { ...payload, changes: [] } }, 'payload.changes');
         return env;

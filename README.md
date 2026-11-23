@@ -57,7 +57,10 @@ in this repository. Read its README first; follow it, don't guess.
    - AI evals, only if the repo already runs promptfoo, DeepEval, OpenAI Evals or
      lm-evaluation-harness: the Complyd step with scan: ai_eval, the matching format
      (promptfoo, deepeval, openai-evals, lm-eval) and input: the tool's results file.
-     It also needs .complyd/ai.yml (see the README's "AI release" section).
+     It also needs .complyd/ai.yml (see the README's "AI release" section). Set a
+     suite's execution: (live, scripted, replay) only when you know how it calls the
+     model (read the eval config: a mocked or stubbed model is scripted); otherwise
+     leave it out and ask me.
    Only use inputs listed in the action's action.yml.
 3. Never add a secret, token or API key: the action signs in with the job's OIDC token.
 4. Tell me what to do in Complyd, since you can't: open Settings › Workload trusts ›
@@ -603,10 +606,12 @@ retrieval: [config/retrieval.yaml]   # optional: RAG settings
 tools: [config/tools.json]           # optional: tool / function definitions
 product_config: [config/features.yaml]
 eval_method: [evals/grader.py]       # optional: graders, scoring code
+execution: live                      # optional: how every suite runs by default (below)
 suites:
   - name: safety-refusals            # the name Complyd shows
     match: support-v2                # the suite's name in the tool's results (default: name)
     required: true                   # a release must pass it
+    execution: live                  # optional: live, scripted or replay (below)
     prompts: [prompts/support.txt]   # default: the top-level prompts
     prompt_version: v12
     dataset: refusals
@@ -631,13 +636,60 @@ test set version (or a dataset:, whose hash then names it)`. Each suite needs
 prompt files and a test set version (or a dataset). The file is read by a
 strict YAML reader: anchors, tags and `|` / `>` text blocks are refused.
 
+#### How a suite ran: `execution`
+
+`execution:` says how a suite's run used the model under test:
+
+| Value | Meaning |
+|---|---|
+| `live` | the suite called the model at run time |
+| `scripted` | your code ran with scripted, mocked or stubbed model replies |
+| `replay` | stored outputs of an earlier run were scored again or served from a cache |
+
+Set it on a suite, or once for the file (version 2: for the file or per
+system) as the default its suites take. Leave it out when you don't know:
+Complyd then shows the run as **Not stated** (as it shows every run sent
+before this key existed), and such a run can't meet an eval plan suite that
+must call the model. Complyd doesn't watch the model call: it shows the value
+as stated by your pipeline, with the commit of the `.complyd/ai.yml` that
+says it. Marking a scripted suite `live` is a false statement in your own
+audit record, like a wrong threshold or an edited result. Complyd shows the
+model usage the tool reported (below) beside it, so a wrong value shows.
+
+Results in the [generic format](#generic-format) may state `execution` per
+suite too. They can move a run away from `live` (a suite that is `live` in
+`.complyd/ai.yml` sent as `scripted` or `replay` for one run), never towards
+it: a generic suite that says `live` against a `scripted` or `replay` default
+stops the step with a config error, and only a change to `.complyd/ai.yml`
+makes it `live`. The action never infers `live` from a tool's output.
+
+`execution:` needs complyd-pipeline 1.4.0 or later: an older version refuses a
+`.complyd/ai.yml` that uses it (unknown key).
+
+#### Model usage
+
+Where the eval tool reports the model's usage, the action sends it per suite:
+`calls`, `input_tokens`, `output_tokens`, `cached_input_tokens` (prompt-cache
+reads at the provider) and `cost_usd` (the tool's own figure; Complyd keeps no
+price list). Only the model under test, never a judge or grader. A figure the
+tool doesn't report is left out, never sent as 0; no usage at all reads
+"usage not reported".
+
+| `format` | Usage sent |
+|---|---|
+| `promptfoo` | per prompt × provider from `metrics.tokenUsage`, not its `assertions` (graders): calls (`numRequests`), prompt and completion tokens, `completionDetails.cacheReadInputTokens`, `metrics.cost`. When some replies came from promptfoo's cache, only what this run incurred (`incurredTokenUsage`, `incurredCost`); a cache hit with no incurred figures (an older promptfoo) sends no usage. promptfoo writes 0 for what a provider didn't report, so a 0 cost, 0 cache reads, or 0 tokens on calls made are left out. Checked against promptfoo 0.126.0's output. |
+| `openai-evals` | the `per_model_usage` rows whose `model_name` is exactly the suite's model id or the run's `data_source.model`: calls (`invocation_count`), prompt, completion and cached tokens. No row with that exact name (e.g. a dated snapshot name against an alias): no usage. A grader on the same model shares its row, so its calls may be counted in. |
+| `generic` | `usage` as your harness states it (below) |
+| `deepeval`, `lm-eval` | none: DeepEval doesn't say whose model its per-case token counts are, and lm-eval reports no usage |
+
 #### Version 2: several AI systems in one repository
 
 When a repository holds more than one AI system, list them under `systems:`.
 Each entry takes the same keys as a version 1 file (`model:`, `prompts:`,
 `safety:`, `datasets:`, `retrieval:`, `tools:`, `product_config:`,
-`eval_method:`, `suites:`), plus `system:` (required) and `paths:`, the globs
-of the files that belong to it. Version 1 files keep working unchanged: they
+`eval_method:`, `execution:`, `suites:`), plus `system:` (required) and `paths:`, the globs
+of the files that belong to it; a top-level `execution:` beside `systems:` is
+the default for every system. Version 1 files keep working unchanged: they
 are one system that owns the whole repository.
 
 ```yaml
@@ -773,9 +825,9 @@ prints the envelope without any sign-in.
 ### Generic format
 
 For any other harness, write this JSON (`value` a number or a decimal
-string; `threshold`, `passed` and `model` optional; a suite without `passed`
-passes when it has no failed or errored cases; `tool.name` is an id without
-spaces):
+string; `threshold`, `passed`, `model`, `execution` and `usage` optional; a
+suite without `passed` passes when it has no failed or errored cases;
+`tool.name` is an id without spaces):
 
 ```json
 {
@@ -789,13 +841,22 @@ spaces):
         { "name": "refusal_rate", "value": 0.97, "threshold": { "value": 0.95, "direction": "gte" }, "passed": true }
       ],
       "cases": { "total": 200, "passed": 194, "failed": 6, "errored": 0 },
-      "passed": true
+      "passed": true,
+      "execution": "live",
+      "usage": { "calls": 200, "input_tokens": 310000, "output_tokens": 42000, "cached_input_tokens": 120000, "cost_usd": "4.12" }
     }
   ]
 }
 ```
 
-Other keys are ignored and never sent.
+`execution` is `live`, `scripted` or `replay` (see
+[How a suite ran](#how-a-suite-ran-execution)). `usage` holds only what your
+harness measured for the model under test (not a judge): every field is
+optional, counts are whole numbers from 0 to 10^12, `cost_usd` is US dollars
+as a string or number with at most 8 digits before the point and 6 after (a
+number is rounded to 6). A value out of that shape, or an unknown key in
+`usage`, fails the step rather than being dropped. Other keys are ignored
+and never sent.
 
 ### Deploy records (coming soon)
 
@@ -884,14 +945,18 @@ Every scan is sent as collector `complyd_ci_scan` with `collector_version`
 set to this package's version: Complyd's id for this tool, unchanged by the
 rename to Complyd pipeline. An AI eval run is sent as collector
 `complyd_ai_release` (Complyd lists it as **Complyd AI release**), schema
-`ai_eval` v2, one observation per results file and role
+`ai_eval` v2 (v3 when a suite states `execution` or `usage`), one observation per results file and role
 (`<run id>-<run attempt>-ai_eval-<hash>`): the eval tool's name and version,
 the format, the commit, the run id, the run time, the suites (see
 [AI release](#ai-release)), whether the list was cut (`truncated`) and
-`repo_config`.
+`repo_config`. Per suite, v3 adds `execution` (`live`, `scripted` or
+`replay`, from `.complyd/ai.yml` or the generic results) and `usage` (see
+[Model usage](#model-usage)), each only when stated. A run that states
+neither is sent as v2, byte for byte as before.
 
 A deploy record (`deploy record`, dry run only for now) is schema
-`ai_release` v2 of the same collector:
+`ai_release` v2 of the same collector (v3 when `repo_config` states an
+`execution`):
 
 | Field | What it is |
 |---|---|
@@ -919,7 +984,8 @@ An AI eval run and a deploy record also carry `repo_config`, what
 `.complyd/ai.yml` says about where each system lives and what it must pass:
 the file's version and SHA-256, and per system its name, its `paths:` globs
 and its suites' names, `required:` flags and metric thresholds (as decimal
-strings). Nothing else from the file and no file's contents: Complyd uses it
+strings), and each suite's `execution:` when it states one (v3). Nothing
+else from the file and no file's contents: Complyd uses it
 to place changes and to propose an eval plan, which you still approve in
 Complyd. It is never cut: when it doesn't fit Complyd's 64 KiB request
 (beside one suite, or a deploy record's changes), the run fails with an

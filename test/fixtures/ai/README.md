@@ -10,6 +10,16 @@ tool's documented results shape, with made-up values:
 | `openai-evals.json` | OpenAI Evals API | an eval run object (`GET /v1/evals/{eval_id}/runs/{run_id}`) |
 | `lm-eval.json` | lm-evaluation-harness | `--output_path` results JSON (`results`, `n-samples`, `config`) |
 | `generic.json` | any harness | Complyd's generic shape (README, "AI release") |
+| `promptfoo-0.126*.real.json` | promptfoo 0.126.0 | real output (below) |
+
+Two files **are real tool output**: promptfoo 0.126.0 (`promptfoo eval -o`)
+run over a three-case config whose provider is a local stub (no model call)
+that reports a fixed usage per reply (120 prompt and 30 completion tokens,
+40 of them cache reads, $0.0021). `promptfoo-0.126.real.json` has no cache
+hit; in `promptfoo-0.126-cache.real.json` the stub serves case two as
+promptfoo's cache would (`cached: true`), so promptfoo writes
+`incurredTokenUsage` and `incurredCost` beside the totals. Only the run's
+`basePath` was replaced (`/work`).
 
 Every prompt, input, output and case text in them contains `CANARY`: the
 tests check none of it reaches the envelope. `repo/` is a repository with a

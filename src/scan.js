@@ -6,7 +6,7 @@ const { createHash } = require('crypto');
 const { reduce, ActionError, PATTERN, MAX_COUNT } = require('./reduce');
 const { reduceSast } = require('./sast');
 const { envelope, fit, send } = require('./post');
-const { loadConfig, DEFAULT_CONFIG } = require('./ai-config');
+const { loadConfig, schemaVersion, DEFAULT_CONFIG } = require('./ai-config');
 const { PARSERS, buildPayload, fitSuites, aiEnvelopeId } = require('./ai-eval');
 
 /** Largest results file read (a scanner's JSON for a big monorepo is a few MB). */
@@ -189,7 +189,8 @@ async function scan(
 
 /**
  * An AI eval run: read the tool's results file and .complyd/ai.yml, build
- * ai_eval v2 (hashes, counts and metric values only) and post it as
+ * ai_eval v2, or v3 when it states execution or usage (hashes, counts, metric
+ * values and reported usage only), and post it as
  * collector complyd_ai_release, unless `dryRun`. `workspace` is the
  * repository root the config's paths are relative to. Resolves Complyd's
  * answer (null on a dry run), the envelope sent (or that would be) and warnings.
@@ -216,8 +217,8 @@ async function scanAi(
     warn: (w) => warnings.push(w),
   });
   const id = aiEnvelopeId(runKey, role, format, input);
-  // v2: the payload carries repo_config, which v1 refuses.
-  const body = fitSuites(envelope(payload, { id, subject, observedAt: at, schema: 'ai_eval', collector: 'complyd_ai_release', schemaVersion: 2 }));
+  // v2: the payload carries repo_config, which v1 refuses; v3 only when it states execution or usage.
+  const body = fitSuites(envelope(payload, { id, subject, observedAt: at, schema: 'ai_eval', collector: 'complyd_ai_release', schemaVersion: schemaVersion(payload) }));
   const sent = JSON.parse(body);
   if (dryRun) return { answer: null, envelope: sent, warnings };
   const answer = await send({ apiUrl, trust, body, getToken }, fetchImpl, sleep);

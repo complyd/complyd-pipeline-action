@@ -1,0 +1,546 @@
+{
+  "evalId": "eval-fKv-2026-11-23T19:31:22",
+  "results": {
+    "version": 3,
+    "timestamp": "2026-11-23T19:31:22.913Z",
+    "prompts": [
+      {
+        "id": "dba6da87678f089dd6389a8ac5c7683a54a33d2954fea85ab601a642e61d3745",
+        "raw": "You are a support assistant. CANARY-PROMPT {{q}}",
+        "label": "support-v2",
+        "provider": "stub",
+        "metrics": {
+          "score": 2,
+          "testPassCount": 2,
+          "testFailCount": 1,
+          "testErrorCount": 0,
+          "testCacheHitCount": 0,
+          "assertPassCount": 2,
+          "assertFailCount": 1,
+          "totalLatencyMs": 32,
+          "tokenUsage": {
+            "prompt": 360,
+            "completion": 90,
+            "cached": 0,
+            "total": 450,
+            "numRequests": 3,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 120,
+              "cacheCreationInputTokens": 0
+            },
+            "assertions": {
+              "total": 0,
+              "prompt": 0,
+              "completion": 0,
+              "cached": 0,
+              "numRequests": 0,
+              "completionDetails": {
+                "reasoning": 0,
+                "acceptedPrediction": 0,
+                "rejectedPrediction": 0,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0
+              }
+            }
+          },
+          "namedScores": {},
+          "namedScoresCount": {},
+          "namedScoreWeights": {},
+          "cost": 0.0063
+        }
+      }
+    ],
+    "results": [
+      {
+        "cost": 0.0021,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "icontains",
+                "value": "cannot"
+              }
+            }
+          ]
+        },
+        "id": "9b62b4dd-e453-4e50-9dee-e4f407c51f48",
+        "latencyMs": 13,
+        "namedScores": {},
+        "prompt": {
+          "raw": "You are a support assistant. CANARY-PROMPT CANARY-INPUT one",
+          "label": "support-v2",
+          "config": {}
+        },
+        "promptId": "dba6da87678f089dd6389a8ac5c7683a54a33d2954fea85ab601a642e61d3745",
+        "promptIdx": 0,
+        "provider": {
+          "id": "stub-model",
+          "label": "stub"
+        },
+        "response": {
+          "output": "I cannot help with that. CANARY-OUTPUT",
+          "tokenUsage": {
+            "prompt": 120,
+            "completion": 30,
+            "cached": 0,
+            "total": 150,
+            "numRequests": 1,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 40,
+              "cacheCreationInputTokens": 0
+            },
+            "assertions": {
+              "total": 0,
+              "prompt": 0,
+              "completion": 0,
+              "cached": 0,
+              "numRequests": 0,
+              "completionDetails": {
+                "reasoning": 0,
+                "acceptedPrediction": 0,
+                "rejectedPrediction": 0,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0
+              }
+            }
+          },
+          "cost": 0.0021
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "vars": {
+            "q": "CANARY-INPUT one"
+          },
+          "assert": [
+            {
+              "type": "icontains",
+              "value": "cannot"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 0,
+        "tokenUsage": {
+          "prompt": 120,
+          "completion": 30,
+          "cached": 0,
+          "total": 150,
+          "numRequests": 1,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0,
+            "cacheReadInputTokens": 40,
+            "cacheCreationInputTokens": 0
+          },
+          "assertions": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          }
+        },
+        "vars": {
+          "q": "CANARY-INPUT one"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.0021,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "icontains",
+                "value": "cannot"
+              }
+            }
+          ]
+        },
+        "id": "c8d3dcfb-9596-4921-8d82-361c5d22b419",
+        "latencyMs": 10,
+        "namedScores": {},
+        "prompt": {
+          "raw": "You are a support assistant. CANARY-PROMPT CANARY-INPUT two",
+          "label": "support-v2",
+          "config": {}
+        },
+        "promptId": "dba6da87678f089dd6389a8ac5c7683a54a33d2954fea85ab601a642e61d3745",
+        "promptIdx": 0,
+        "provider": {
+          "id": "stub-model",
+          "label": "stub"
+        },
+        "response": {
+          "output": "I cannot help with that. CANARY-OUTPUT",
+          "tokenUsage": {
+            "prompt": 120,
+            "completion": 30,
+            "cached": 0,
+            "total": 150,
+            "numRequests": 1,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 40,
+              "cacheCreationInputTokens": 0
+            },
+            "assertions": {
+              "total": 0,
+              "prompt": 0,
+              "completion": 0,
+              "cached": 0,
+              "numRequests": 0,
+              "completionDetails": {
+                "reasoning": 0,
+                "acceptedPrediction": 0,
+                "rejectedPrediction": 0,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0
+              }
+            }
+          },
+          "cost": 0.0021
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "vars": {
+            "q": "CANARY-INPUT two"
+          },
+          "assert": [
+            {
+              "type": "icontains",
+              "value": "cannot"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 1,
+        "tokenUsage": {
+          "prompt": 120,
+          "completion": 30,
+          "cached": 0,
+          "total": 150,
+          "numRequests": 1,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0,
+            "cacheReadInputTokens": 40,
+            "cacheCreationInputTokens": 0
+          },
+          "assertions": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          }
+        },
+        "vars": {
+          "q": "CANARY-INPUT two"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.0021,
+        "error": "Expected output to contain \"sure\"",
+        "gradingResult": {
+          "pass": false,
+          "score": 0,
+          "reason": "Expected output to contain \"sure\"",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": false,
+              "score": 0,
+              "reason": "Expected output to contain \"sure\"",
+              "assertion": {
+                "type": "icontains",
+                "value": "sure"
+              }
+            }
+          ]
+        },
+        "id": "f13da6d5-9964-4b75-8f29-130d031306cf",
+        "latencyMs": 9,
+        "namedScores": {},
+        "prompt": {
+          "raw": "You are a support assistant. CANARY-PROMPT CANARY-INPUT three",
+          "label": "support-v2",
+          "config": {}
+        },
+        "promptId": "dba6da87678f089dd6389a8ac5c7683a54a33d2954fea85ab601a642e61d3745",
+        "promptIdx": 0,
+        "provider": {
+          "id": "stub-model",
+          "label": "stub"
+        },
+        "response": {
+          "output": "I cannot help with that. CANARY-OUTPUT",
+          "tokenUsage": {
+            "prompt": 120,
+            "completion": 30,
+            "cached": 0,
+            "total": 150,
+            "numRequests": 1,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 40,
+              "cacheCreationInputTokens": 0
+            },
+            "assertions": {
+              "total": 0,
+              "prompt": 0,
+              "completion": 0,
+              "cached": 0,
+              "numRequests": 0,
+              "completionDetails": {
+                "reasoning": 0,
+                "acceptedPrediction": 0,
+                "rejectedPrediction": 0,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0
+              }
+            }
+          },
+          "cost": 0.0021
+        },
+        "score": 0,
+        "success": false,
+        "testCase": {
+          "vars": {
+            "q": "CANARY-INPUT three"
+          },
+          "assert": [
+            {
+              "type": "icontains",
+              "value": "sure"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 2,
+        "tokenUsage": {
+          "prompt": 120,
+          "completion": 30,
+          "cached": 0,
+          "total": 150,
+          "numRequests": 1,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0,
+            "cacheReadInputTokens": 40,
+            "cacheCreationInputTokens": 0
+          },
+          "assertions": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          }
+        },
+        "vars": {
+          "q": "CANARY-INPUT three"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 1
+      }
+    ],
+    "stats": {
+      "successes": 2,
+      "failures": 1,
+      "errors": 0,
+      "tokenUsage": {
+        "prompt": 360,
+        "completion": 90,
+        "cached": 0,
+        "total": 450,
+        "numRequests": 3,
+        "completionDetails": {
+          "reasoning": 0,
+          "acceptedPrediction": 0,
+          "rejectedPrediction": 0,
+          "cacheReadInputTokens": 120,
+          "cacheCreationInputTokens": 0
+        },
+        "assertions": {
+          "total": 0,
+          "prompt": 0,
+          "completion": 0,
+          "cached": 0,
+          "numRequests": 0,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          }
+        }
+      },
+      "durationMs": 79,
+      "evaluationDurationMs": 79
+    }
+  },
+  "config": {
+    "tags": {},
+    "description": "complyd usage fixture",
+    "prompts": [
+      {
+        "id": "support",
+        "label": "support-v2",
+        "raw": "You are a support assistant. CANARY-PROMPT {{q}}"
+      }
+    ],
+    "providers": [
+      {
+        "id": "file://provider.js",
+        "label": "stub"
+      }
+    ],
+    "tests": [
+      {
+        "vars": {
+          "q": "CANARY-INPUT one"
+        },
+        "assert": [
+          {
+            "type": "icontains",
+            "value": "cannot"
+          }
+        ]
+      },
+      {
+        "vars": {
+          "q": "CANARY-INPUT two"
+        },
+        "assert": [
+          {
+            "type": "icontains",
+            "value": "cannot"
+          }
+        ]
+      },
+      {
+        "vars": {
+          "q": "CANARY-INPUT three"
+        },
+        "assert": [
+          {
+            "type": "icontains",
+            "value": "sure"
+          }
+        ]
+      }
+    ],
+    "env": {},
+    "outputPath": [
+      "out.json"
+    ],
+    "extensions": [],
+    "metadata": {},
+    "evaluateOptions": {},
+    "basePath": "/work"
+  },
+  "shareableUrl": null,
+  "metadata": {
+    "promptfooVersion": "0.126.0",
+    "nodeVersion": "v24.15.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "exportedAt": "2026-11-23T19:31:23.046Z",
+    "evaluationCreatedAt": "2026-11-23T19:31:22.913Z"
+  },
+  "vars": [
+    "q"
+  ],
+  "runtimeOptions": {
+    "eventSource": "cli",
+    "showProgressBar": false,
+    "repeat": 1,
+    "maxConcurrency": 4,
+    "cache": true
+  }
+}

@@ -8,7 +8,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, writeFileSync, readFileSync, mkdirSync, cpSync, symlinkSync } = require('fs');
 const { tmpdir } = require('os');
 const { parseYaml } = require('../src/yaml');
-const { parseConfig, loadConfig, hashFiles, repoConfig, ownerOf, globMatch } = require('../src/ai-config');
+const { parseConfig, loadConfig, hashFiles, repoConfig, ownerOf, globMatch, schemaVersion } = require('../src/ai-config');
 const { PARSERS, FORMATS, buildPayload, fitSuites, decimal, providerModel, aiEnvelopeId } = require('../src/ai-eval');
 const { envelope, MAX_BODY_BYTES } = require('../src/post');
 const { deployRecord, sections, splitModel } = require('../src/ai-release');
@@ -27,8 +27,11 @@ const config = () => parseConfig(readFileSync(join(REPO, '.complyd', 'ai.yml'), 
 const payloadOf = (format, role = 'candidate') =>
   buildPayload(PARSERS[format](fixture(format)), config(), { format, role, commit: SHA, runId: 'gitlab-555', ranAt: '2026-11-19T08:00:00.000Z', root: REPO });
 
-/** A valid ai_eval v2 payload (Complyd's schema file). */
-const assertSchema = (p) => assertValid('ai_eval.v2', p);
+/** A valid ai_eval payload under the version it needs (Complyd's schema files); v3 takes every v2 payload too. */
+const assertSchema = (p) => {
+  assertValid(`ai_eval.v${schemaVersion(p)}`, p);
+  assertValid('ai_eval.v3', p);
+};
 /** repo_config: names, globs, required flags and decimal thresholds only. */
 const assertRepoConfig = (r) => assertValid('ai_eval.v2#/$defs/repo_config', r);
 
@@ -138,6 +141,10 @@ test('promptfoo: one suite per prompt × provider, pass rate and named scores', 
   assert.equal(b.passed, true);
   assert.deepEqual(a.test_set, { version: '4', cases: 50, selection: 'curated' });
   assert.deepEqual(a.evaluator.parser, 'llm-rubric');
+  // The fixture's tokenUsage has no numRequests: tokens and cost only; the second prompt reports none.
+  assert.deepEqual(a.usage, { input_tokens: 40011, output_tokens: 10200, cost_usd: '0.0412' });
+  assert.equal(Object.hasOwn(b, 'usage'), false);
+  assert.equal(schemaVersion(p), 3);
 });
 
 test('deepeval: metrics averaged over cases; Toxicity is lower-is-better; the judge from the file', () => {
@@ -164,6 +171,7 @@ test('openai-evals: result counts and per-criteria pass rates', () => {
   assert.deepEqual(s.model, { provider: 'openai', id: 'gpt-4o-mini' });
   assert.deepEqual(s.cases, { total: 50, passed: 47, failed: 3, errored: 0 });
   assert.deepEqual(s.metrics.map((m) => [m.name, m.value, m.passed]), [['pass_rate', '0.94', true], ['refuses-cross-account-6f1a2b', '0.94', false]]);
+  assert.deepEqual(s.usage, { calls: 50, input_tokens: 5500, output_tokens: 1200, cached_input_tokens: 0 });
   assert.throws(() => PARSERS['openai-evals']({ object: 'eval' }), { code: 'results' });
 });
 
@@ -249,7 +257,8 @@ test('CLI scan ai_eval --dry-run: prints the envelope, sends nothing, needs no s
   const env = JSON.parse(r.out.join('\n'));
   assert.equal(env.collector, 'complyd_ai_release');
   assert.equal(env.schema, 'ai_eval');
-  assert.equal(env.schema_version, 2);
+  // promptfoo reports usage: v3.
+  assert.equal(env.schema_version, 3);
   assertSchema(env.payload);
 });
 
@@ -531,7 +540,7 @@ test('config v2: errors name the system entry and say what to fix', () => {
   for (const [text, message] of [
     ['version: 2', /systems: list your AI systems \(1 to 50\)/],
     ['version: 2\nsystems: []', /systems: list your AI systems/],
-    ['version: 2\nsuites: []\nsystems:\n' + sys('a'), /suites: unknown key \(expected one of version, systems\)/],
+    ['version: 2\nsuites: []\nsystems:\n' + sys('a'), /suites: unknown key \(expected one of version, execution, systems\)/],
     ['version: 3\nprompts: [p]\nsuites:\n  - name: a', /version: set version: 1 \(or version: 2 with systems:\)/],
     ['version: 1\nsystems: []', /systems: unknown key/],
     ['version: 1\npaths: ["**"]\nprompts: [p]\nsuites:\n  - name: a', /paths: unknown key/],
@@ -871,14 +880,15 @@ test('CLI deploy record: a repo_config over the 64 KiB cap is an error naming it
   assert.match(r.err.join('\n'), /repo_config \(the summary of .complyd\/ai.yml: \d+ bytes\) doesn't fit Complyd's 64 KiB request/);
 });
 
-test("Complyd's schemas: every dry-run deploy record and ai_eval envelope is valid v2 (test/fixtures/schemas)", async () => {
-  // ai_eval: every format's results.
+test("Complyd's schemas: every dry-run deploy record and ai_eval envelope is valid under the version it names (test/fixtures/schemas)", async () => {
+  // ai_eval: every format's results; v3 only where the tool reports usage.
+  const usage = { promptfoo: true, 'openai-evals': true };
   for (const format of FORMATS) {
     const r = await cli(['scan', 'ai_eval', '--format', format, '--input', join(AI, `${format}.json`), '--workspace', REPO, '--commit', SHA, '--dry-run']);
     assert.equal(r.code, 0, r.err.join('\n'));
     const env = JSON.parse(r.out.join('\n'));
-    assert.deepEqual([env.schema, env.schema_version], ['ai_eval', 2], format);
-    assertValid('ai_eval.v2', env.payload);
+    assert.deepEqual([env.schema, env.schema_version], ['ai_eval', usage[format] ? 3 : 2], format);
+    assertValid(`ai_eval.v${env.schema_version}`, env.payload);
   }
 
   // Deploy record, v1 config: model and dataset changed, a retrieval file added (a kind with no before).
@@ -938,4 +948,173 @@ test('deploy record: a system without the deployed model is a config error namin
   assert.throws(() => deployRecord({ environment: 'production', root: dir }), { code: 'config', message: /model: deploy record needs the deployed model: set provider: and id:/ });
   // A model in the config is validated as a suite's is.
   assert.throws(() => parseConfig(readFileSync(yml, 'utf8').replace('model:\n', 'model:\n  provider: OpenAI\n  id: https://x/y\n')), { code: 'config', message: /model\.provider: .*model\.id: set the model id, not a URL/ });
+});
+
+// Execution per suite and the usage the tool reported (ai_eval / ai_release v3).
+
+const CONFIG_TEXT = () => readFileSync(join(REPO, '.complyd', 'ai.yml'), 'utf8');
+/** The fixture config with `lines` added under the first suite (safety-refusals). */
+const configWith = (...lines) => parseConfig(CONFIG_TEXT().replace('  - name: safety-refusals\n', `  - name: safety-refusals\n${lines.map((l) => `    ${l}\n`).join('')}`));
+const buildWith = (format, doc, cfg, role = 'candidate') => buildPayload(PARSERS[format](doc), cfg, { format, role, commit: SHA, runId: 'gitlab-555', ranAt: '2026-11-19T08:00:00.000Z', root: REPO });
+const genericDoc = (suite) => ({ tool: { name: 'acme-harness', version: '2.1.0' }, suites: [{ ...fixture('generic').suites[0], ...suite }] });
+
+test('config: execution per suite, per system or for the file; repo_config carries each suite’s; anything else is refused', () => {
+  const v1 = parseConfig(CONFIG_TEXT().replace('version: 1\n', 'version: 1\nexecution: scripted\n').replace('  - name: answer-quality\n', '  - name: answer-quality\n    execution: live\n'));
+  assert.deepEqual(v1.suites.map((s) => [s.name, s.execution]), [['safety-refusals', 'scripted'], ['answer-quality', 'live'], ['hellaswag', 'scripted']]);
+  assert.deepEqual(repoConfig(v1).systems[0].suites.map((s) => s.execution), ['scripted', 'live', 'scripted']);
+  assertValid('ai_eval.v3#/$defs/repo_config', repoConfig(v1));
+  // Not stated: no key, so the config is what it was (v2).
+  assert.equal(config().suites.some((s) => s.execution), false);
+  assert.equal(JSON.stringify(repoConfig(config())).includes('execution'), false);
+
+  const v2 = parseConfig(`version: 2
+execution: replay
+systems:
+  - system: a
+    paths: ["a/**"]
+    execution: live
+    prompts: [a/p]
+    suites:
+      - name: a-1
+        test_set: { version: "1" }
+      - name: a-2
+        execution: scripted
+        test_set: { version: "1" }
+  - system: b
+    paths: ["b/**"]
+    prompts: [b/p]
+    suites:
+      - name: b-1
+        test_set: { version: "1" }
+`);
+  assert.deepEqual(v2.suites.map((s) => [s.name, s.execution]), [['a-1', 'live'], ['a-2', 'scripted'], ['b-1', 'replay']]);
+
+  for (const [text, message] of [
+    [CONFIG_TEXT().replace('  - name: safety-refusals\n', '  - name: safety-refusals\n    execution: unknown\n'), /suites\[0\]\.execution: set live, scripted, replay/],
+    [CONFIG_TEXT().replace('version: 1\n', 'version: 1\nexecution: Live\n'), /execution: set live, scripted, replay/],
+    [CONFIG_TEXT().replace('  - name: safety-refusals\n', '  - name: safety-refusals\n    execution: [live]\n'), /suites\[0\]\.execution/],
+  ]) {
+    assert.throws(() => parseConfig(text), { code: 'config', message }, text.slice(0, 80));
+  }
+});
+
+test('payload: no execution and no usage stays ai_eval v2, with no new key', () => {
+  for (const format of ['deepeval', 'lm-eval', 'generic']) {
+    const p = payloadOf(format);
+    assert.equal(schemaVersion(p), 2, format);
+    assert.doesNotMatch(JSON.stringify(p), /"execution"|"usage"/, format);
+    assertValid('ai_eval.v2', p);
+  }
+});
+
+test('promptfoo 0.126 (real output): calls and tokens of the target; a cache hit counts only the calls this run made', () => {
+  const cfg = configWith('model: { provider: openai, id: gpt-4o-mini }', 'execution: live');
+  const fresh = buildWith('promptfoo', fixture('promptfoo-0.126.real'), cfg);
+  assertSchema(fresh);
+  assert.equal(schemaVersion(fresh), 3);
+  assert.deepEqual([fresh.tool, fresh.suites[0].cases], [{ name: 'promptfoo', version: '0.126.0' }, { total: 3, passed: 2, failed: 1, errored: 0 }]);
+  assert.equal(fresh.suites[0].execution, 'live');
+  assert.deepEqual(fresh.suites[0].usage, { calls: 3, input_tokens: 360, output_tokens: 90, cached_input_tokens: 120, cost_usd: '0.0063' });
+
+  // Case two came from promptfoo's cache: incurredTokenUsage and incurredCost, never the top level's cached.
+  const cached = buildWith('promptfoo', fixture('promptfoo-0.126-cache.real'), cfg);
+  assertSchema(cached);
+  assert.deepEqual(cached.suites[0].usage, { calls: 2, input_tokens: 240, output_tokens: 60, cached_input_tokens: 80, cost_usd: '0.0042' });
+
+  // A cache hit without the incurred view (an older promptfoo) can't be split: no usage, not the totals.
+  const old = fixture('promptfoo-0.126-cache.real');
+  delete old.results.prompts[0].metrics.tokenUsage.incurredTokenUsage;
+  delete old.results.prompts[0].metrics.incurredCost;
+  assert.equal(Object.hasOwn(buildWith('promptfoo', old, cfg).suites[0], 'usage'), false);
+
+  // promptfoo's 0 for what a provider didn't report is left out; calls it made are kept.
+  const quiet = fixture('promptfoo-0.126.real');
+  const m = quiet.results.prompts[0].metrics;
+  Object.assign(m.tokenUsage, { prompt: 0, completion: 0, total: 0 });
+  m.tokenUsage.completionDetails.cacheReadInputTokens = 0;
+  m.cost = 0;
+  assert.deepEqual(buildWith('promptfoo', quiet, cfg).suites[0].usage, { calls: 3 });
+  // No call at all is a real 0 (Complyd flags it on a live suite).
+  Object.assign(m.tokenUsage, { numRequests: 0 });
+  assert.deepEqual(buildWith('promptfoo', quiet, cfg).suites[0].usage, { calls: 0, input_tokens: 0, output_tokens: 0 });
+  assert.doesNotMatch(JSON.stringify(fresh), /CANARY/);
+});
+
+test('openai-evals: only per_model_usage rows named after the model under test; none matching, no usage', () => {
+  const run = fixture('openai-evals');
+  run.per_model_usage.push({ model_name: 'o3-grader', invocation_count: 50, prompt_tokens: 9000, completion_tokens: 900, total_tokens: 9900, cached_tokens: 0 });
+  const s = buildWith('openai-evals', run, config()).suites[0];
+  assert.deepEqual(s.usage, { calls: 50, input_tokens: 5500, output_tokens: 1200, cached_input_tokens: 0 });
+  // A dated snapshot name against the alias the run names: not the same model as far as the action can tell.
+  const dated = fixture('openai-evals');
+  dated.per_model_usage[0].model_name = 'gpt-4o-mini-2024-07-18';
+  const p = buildWith('openai-evals', dated, config());
+  assert.equal(Object.hasOwn(p.suites[0], 'usage'), false);
+  assert.equal(schemaVersion(p), 2);
+  // The run's data_source.model names it too.
+  dated.data_source = { type: 'completions', model: 'gpt-4o-mini-2024-07-18' };
+  assert.equal(buildWith('openai-evals', dated, config()).suites[0].usage.calls, 50);
+});
+
+test('generic: execution and usage as stated; a push moves a run away from live, never to it', () => {
+  const usage = { calls: 200, input_tokens: 31000, output_tokens: 4200, cached_input_tokens: 1000, cost_usd: '4.12' };
+  const p = buildWith('generic', genericDoc({ execution: 'live', usage }), config());
+  assertSchema(p);
+  assert.deepEqual([p.suites[0].execution, p.suites[0].usage], ['live', usage]);
+  // A number cost is the tool's figure, to the micro-dollar.
+  assert.equal(buildWith('generic', genericDoc({ usage: { cost_usd: 0.1234567 } }), config()).suites[0].usage.cost_usd, '0.123457');
+  // An empty usage is "not reported".
+  assert.equal(schemaVersion(buildWith('generic', genericDoc({ usage: {} }), config())), 2);
+
+  const scripted = configWith('execution: scripted');
+  // ai.yml's default when the results say nothing.
+  assert.equal(buildWith('generic', genericDoc({}), scripted).suites[0].execution, 'scripted');
+  // live → scripted or replay on a push is fine.
+  assert.equal(buildWith('generic', genericDoc({ execution: 'replay' }), configWith('execution: live')).suites[0].execution, 'replay');
+  // scripted → live is not: a person edits ai.yml.
+  assert.throws(() => buildWith('generic', genericDoc({ execution: 'live' }), scripted), { code: 'config', message: /ran live, but suites\[0\]\.execution in \.complyd\/ai\.yml says scripted/ });
+
+  for (const [suite, message] of [
+    [{ execution: 'unknown' }, /suites\[0\]\.execution must be live, scripted, replay/],
+    [{ usage: { calls: -1 } }, /usage\.calls must be a whole number/],
+    [{ usage: { input_tokens: 1.5 } }, /usage\.input_tokens must be a whole number/],
+    [{ usage: { output_tokens: '10' } }, /usage\.output_tokens must be a whole number/],
+    [{ usage: { calls: 1e12 + 1 } }, /usage\.calls must be a whole number/],
+    [{ usage: { cost_usd: '4,12' } }, /usage\.cost_usd must be the cost/],
+    [{ usage: { cost_usd: -1 } }, /usage\.cost_usd must be the cost/],
+    [{ usage: { total_tokens: 5 } }, /usage has an unknown key "total_tokens"/],
+    [{ usage: [1] }, /usage must be an object/],
+  ]) {
+    assert.throws(() => buildWith('generic', genericDoc(suite), config()), { code: 'results', message }, JSON.stringify(suite));
+  }
+});
+
+test("Complyd's v3 schemas refuse what the action never sends (the validator is not vacuous)", () => {
+  const p = buildWith('generic', genericDoc({ execution: 'live', usage: { calls: 1 } }), config());
+  assert.ok(errorsOf('ai_eval.v3', { ...p, suites: [{ ...p.suites[0], execution: 'unknown' }] }));
+  assert.ok(errorsOf('ai_eval.v3', { ...p, suites: [{ ...p.suites[0], usage: {} }] }));
+  assert.ok(errorsOf('ai_eval.v3', { ...p, suites: [{ ...p.suites[0], rescored: true }] }));
+  assert.ok(errorsOf('ai_eval.v2', p));
+});
+
+test('scan ai_eval and deploy record: v3 envelopes when ai.yml states execution, valid under Complyd’s v3 schemas', async () => {
+  const { dir, git } = gitRepo();
+  const yml = join(dir, '.complyd', 'ai.yml');
+  writeFileSync(yml, readFileSync(yml, 'utf8').replace('version: 1\n', 'version: 1\nexecution: scripted\n'));
+  git('commit', '-qam', 'state execution');
+  const r = await cli(['scan', 'ai_eval', '--format', 'lm-eval', '--input', join(AI, 'lm-eval.json'), '--workspace', dir, '--commit', SHA, '--dry-run']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  const env = JSON.parse(r.out.join('\n'));
+  assert.equal(env.schema_version, 3);
+  assert.equal(env.payload.suites[0].execution, 'scripted');
+  assert.equal(Object.hasOwn(env.payload.suites[0], 'usage'), false);
+  assertValid('ai_eval.v3', env.payload);
+
+  const d = await cli(['deploy', 'record', '--environment', 'production', '--workspace', dir, '--dry-run']);
+  assert.equal(d.code, 0, d.err.join('\n'));
+  const rec = JSON.parse(d.out.join('\n'));
+  assert.deepEqual([rec.schema, rec.schema_version], ['ai_release', 3]);
+  assert.deepEqual(rec.payload.repo_config.systems[0].suites.map((s) => s.execution), ['scripted', 'scripted', 'scripted']);
+  assertValid('ai_release.v3', rec.payload);
+  assert.ok(errorsOf('ai_release.v2', rec.payload));
 });
