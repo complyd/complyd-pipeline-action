@@ -20,6 +20,55 @@ address): see [What Complyd receives](#what-complyd-receives). A SAST scan
 run (`scan: ai_eval`) sends hashes, counts and metric values, never prompts or
 outputs: see [AI release](#ai-release).
 
+## Set up with your AI assistant
+
+Paste this into Claude Code, Cursor, Copilot or another coding assistant
+opened in the repository you want scanned. Everything in it comes from this
+README; [llms.txt](llms.txt) points an assistant at the rest.
+
+```text
+Set up the Complyd pipeline GitHub Action (https://github.com/complyd/complyd-pipeline-action)
+in this repository. Read its README first; follow it, don't guess.
+
+1. Create .github/workflows/complyd-scan.yml with:
+   - on: push to the default branch, a daily schedule (cron), and workflow_dispatch.
+     Complyd accepts runs on the default branch only.
+   - permissions: id-token: write and contents: read. Nothing else.
+   - actions/checkout pinned to a full commit SHA, with persist-credentials: false.
+   - Every Complyd step pinned exactly as:
+     uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0
+     with trust: ${{ vars.COMPLYD_TRUST }} and audience: ${{ vars.COMPLYD_AUDIENCE }}
+     (an empty audience falls back to the default, which is right for a new trust).
+2. Pick the scans from what this repository has (one step of each kind per run at most):
+   - Dependencies (any repo with a lockfile): google/osv-scanner-action/osv-scanner-action
+     pinned to 32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1, continue-on-error: true,
+     scan-args --format=json --output=osv-results.json --all-packages --recursive ./
+     Then the Complyd step with results: osv-results.json and scanner-version: 2.7.1.
+   - SAST (source code): run Semgrep with
+     semgrep scan --config auto --sarif-output semgrep.sarif --json-output semgrep.json
+     Then the Complyd step with scan: sast, results: semgrep.sarif and
+     files-scanned set from jq '.paths.scanned | length' semgrep.json.
+   - AI evals, only if the repo already runs promptfoo, DeepEval, OpenAI Evals or
+     lm-evaluation-harness: the Complyd step with scan: ai_eval, the matching format
+     (promptfoo, deepeval, openai-evals, lm-eval) and input: the tool's results file.
+     It also needs .complyd/ai.yml (see the README's "AI release" section).
+   Only use inputs listed in the action's action.yml.
+3. Never add a secret, token or API key: the action signs in with the job's OIDC token.
+4. Tell me what to do in Complyd, since you can't: open Settings › Workload trusts ›
+   Create trust, tick "Complyd CI scan" (and "Complyd AI release" for AI evals), enter
+   the owner id and repository id from
+   gh api repos/OWNER/REPO --jq '.owner.id, .id'
+   and the default branch, then copy the trust id (trw_…) and audience it shows into
+   repository variables (variables, not secrets):
+   gh variable set COMPLYD_TRUST --body trw_…
+   gh variable set COMPLYD_AUDIENCE --body https://api.complyd.ai/observations/trw_…
+5. Show me the workflow file and the commands before running anything.
+```
+
+What the assistant should end up with is the workflow in [Set up](#set-up),
+plus [SAST scans](#sast-scans) or [AI release](#ai-release) steps if they
+apply. Check its pins against the ones above before you merge.
+
 ## Set up
 
 1. In Complyd, open **Settings › Workload trusts › Create trust**, tick
@@ -61,7 +110,7 @@ jobs:
             ./
       - name: Send the dependency scan to Complyd
         # Pin the release commit (see Releases); @v1 follows every v1.x.y.
-        uses: complyd/complyd-pipeline-action@<v1.3.0 commit SHA> # v1.3.0
+        uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000 # your trust id
           results: osv-results.json
@@ -173,11 +222,11 @@ send both, one step each. A repository with CodeQL for JavaScript and Python:
 
 ```yaml
       - name: CodeQL
-        uses: github/codeql-action/analyze@<commit SHA> # v3
+        uses: github/codeql-action/analyze@d2aacf54c2fbc910db8d7ec338fdb54ea48c692d # v3.39.4
         with:
           output: codeql-results # one SARIF file per language: javascript.sarif, python.sarif
       - name: Send the SAST scan to Complyd
-        uses: complyd/complyd-pipeline-action@<v1.3.0 commit SHA> # v1.3.0
+        uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000
           scan: sast
@@ -222,7 +271,7 @@ The old name was removed in 1.2.0. Use
 `complyd-pipeline scan dependencies|sast …` with the same options.
 
 Install it from this repository, pinned to a release commit
-(`npm install --global github:complyd/complyd-pipeline-action#<commit SHA>`), or
+(`npm install --global github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9`), or
 build the image from the `Dockerfile` (distroless Node, no shell). The npm
 package `@complyd/pipeline` and the image `ghcr.io/complyd/pipeline` are
 published from the release workflow once a release is approved (see
@@ -293,7 +342,7 @@ dependency-scan:
     # osv-scanner exits 1 when it finds something: that is still a scan to send.
     # --all-packages: every package read, so Complyd sees the scan ran.
     - osv-scanner scan source -r --all-packages --format json . > osv-results.json || [ $? -eq 1 ]
-    - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
+    - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
     - >
       complyd-pipeline scan dependencies --input osv-results.json
       --scanner-version "$OSV_SCANNER_VERSION"
@@ -365,7 +414,7 @@ phases:
     runtime-versions:
       nodejs: 20
     commands:
-      - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
+      - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
   build:
     commands:
       - semgrep scan --config auto --sarif --output semgrep.sarif
@@ -402,7 +451,7 @@ jobs:
       - run:
           name: Send the dependency scan to Complyd
           command: |
-            npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
+            npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
             COMPLYD_ID_TOKEN=$(circleci run oidc get --v3 --aud "https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000") \
               complyd-pipeline scan dependencies --input osv-results.json --scanner-version 2.7.1 \
                 --trust trw_00000000-0000-4000-8000-000000000000 \
@@ -444,7 +493,7 @@ pipelines:
               - https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
           script:
             # … run OSV-Scanner (--all-packages --format json), writing osv-results.json
-            - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
+            - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
             - >
               complyd-pipeline scan dependencies --input osv-results.json --scanner-version 2.7.1
               --trust trw_00000000-0000-4000-8000-000000000000
@@ -472,7 +521,7 @@ pool:
 steps:
   # … run OSV-Scanner (--all-packages --format json), writing osv-results.json
   - script: |
-      npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
+      npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
       complyd-pipeline scan dependencies --input osv-results.json --scanner-version 2.7.1 \
         --repo azure-devops:acme/payments-api \
         --run-id "$(Build.BuildId)-$(System.JobAttempt)"
@@ -669,7 +718,7 @@ trusts), then:
 ```yaml
       - run: npx promptfoo@0.112.3 eval -c promptfooconfig.yaml -o promptfoo-results.json || true
       - name: Send the eval run to Complyd
-        uses: complyd/complyd-pipeline-action@<commit SHA> # vX.Y.Z
+        uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000
           audience: https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
@@ -693,7 +742,7 @@ ai-eval:
       aud: https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
   script:
     - npx promptfoo@0.112.3 eval -c promptfooconfig.yaml -o promptfoo-results.json || true
-    - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#<commit SHA>
+    - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
     - >
       complyd-pipeline scan ai_eval --format promptfoo --input promptfoo-results.json
       --trust trw_00000000-0000-4000-8000-000000000000
@@ -786,7 +835,7 @@ hashes `scan ai_eval` sends for the same file.
 | Input | Required | Meaning |
 |---|---|---|
 | `trust` | yes | The trust id from Complyd, `trw_…` |
-| `audience` | yes | The trust's audience from Complyd |
+| `audience` | no | The trust's audience from Complyd; default `https://api.complyd.ai/observations/<trust>`. Set it only if Complyd shows a different one |
 | `results` | yes* | Path of the scanner's output file. For `scan: sast`: a file, a directory of `*.sarif` files, or one path per line, merged into one scan |
 | `input` | yes* | Same as `results` (*set one of them) |
 | `scan` | no | `dependencies` (default; `dependency` also works), `sast` (SARIF only) or `ai_eval` |
@@ -982,12 +1031,12 @@ release on:
    `X.Y.Z` (CI fails the tag otherwise: that version is what Complyd records as
    the collector version). Then `v1` is moved to the same commit.
 5. Release notes give the commit SHA and the image digest, so you can pin
-   `complyd/complyd-pipeline-action@<sha> # vX.Y.Z` (recommended; Dependabot keeps it
-   up to date) or follow `@v1`.
+   the commit, e.g. `complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0`
+   (recommended; Dependabot keeps it up to date) or follow `@v1`.
 
 Security reports: see [SECURITY.md](SECURITY.md).
 
 ## Develop
 
-No dependencies. `npm test` runs the unit and integration tests (Node 20 or
-later; the action itself runs on `node24`). Releasing: [RELEASING.md](RELEASING.md).
+No runtime dependencies (the tests use `ajv` and `yaml`: `npm ci` first). `npm test` runs the unit and integration tests (Node 20 or
+later; the action itself runs on `node24`). Releasing: [RELEASING.md](RELEASING.md). Coding agents: [AGENTS.md](AGENTS.md).
