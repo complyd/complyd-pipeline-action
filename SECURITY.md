@@ -27,7 +27,7 @@ to it; if you pin a commit SHA, update it when we publish a security release.
   the run id. The scan holds no file paths, code, author, committer or actor.
 - For an AI eval run (`scan: ai_eval`) it sends per suite names, ids, case
   counts, metric values and thresholds, and SHA-256 hashes of the prompt,
-  dataset and rubric files, never their contents; and, when stated, how the
+  dataset and rubric files, never their contents; and (from v1.4.0), when stated, how the
   suite ran (`execution`) and the model usage the eval tool reported (call
   and token counts, cost). README's "What Complyd receives" lists every field.
 - Each request also carries the sign-in token your CI issues (or your ingest

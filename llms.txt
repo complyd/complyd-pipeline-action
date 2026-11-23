@@ -11,9 +11,9 @@ Pin it as `uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822
 - [Set up](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#set-up): dependency scan workflow with OSV-Scanner
 - [SAST scans](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#sast-scans): CodeQL and Semgrep
 - [AI release](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#ai-release): `scan: ai_eval` and `.complyd/ai.yml`
-- [How a suite ran](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#how-a-suite-ran-execution): `execution: live | scripted | replay` per suite in `.complyd/ai.yml` (1.4.0 or later); leave it out when unknown, never mark a scripted suite `live`
-- [Model usage](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#model-usage): calls, tokens and cost the eval tool reported, per format
-- [Generic format](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#generic-format): JSON for any other harness, with optional `execution` and `usage`
+- [How a suite ran](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#how-a-suite-ran-execution): `execution: live | scripted | replay` per suite in `.complyd/ai.yml` (from v1.4.0: not while the pin above is v1.3.0, which refuses the key); leave it out when unknown, never mark a scripted suite `live`
+- [Model usage](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#model-usage): (from v1.4.0) calls, tokens and cost the eval tool reported, per format
+- [Generic format](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#generic-format): JSON for any other harness, with optional `execution` and `usage` (from v1.4.0)
 - [Inputs](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#inputs): every input and output
 - [What Complyd receives](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#what-complyd-receives): exactly what is sent
 - [Errors](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#errors): failure messages and fixes

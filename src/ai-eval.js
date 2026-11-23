@@ -50,15 +50,20 @@ const isoTime = (v) => {
 const metricName = (s) => String(s).replace(/[^A-Za-z0-9 ._:/@+-]/g, '-').slice(0, 64) || 'metric';
 const rate = (part, total) => (total > 0 ? part / total : undefined);
 const tokens = (v) => (Number.isInteger(v) && v >= 0 && v <= MAX_TOKENS ? v : undefined);
-/** A non-negative USD figure as the schema's string (rounded to the micro-dollar), else undefined. */
+/**
+ * A non-negative USD figure as the schema's string (rounded to the micro-dollar); undefined when out of
+ * shape (including a number that rounds up to 10^8); null, left out, for a positive cost that rounds to 0.
+ */
 const cost = (v) => {
   if (typeof v === 'string') return COST.test(v) ? v : undefined;
-  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v >= 1e8) return undefined;
-  return v.toFixed(6).replace(/\.?0+$/, '') || '0';
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined;
+  const s = v.toFixed(6).replace(/\.?0+$/, '') || '0';
+  if (s === '0' && v > 0) return null;
+  return COST.test(s) ? s : undefined;
 };
 /** A usage object without the fields left out; undefined when none is left ("usage not reported"). */
 const usageOf = (u) => {
-  const out = Object.fromEntries(Object.entries(u).filter(([, v]) => v !== undefined));
+  const out = Object.fromEntries(Object.entries(u).filter(([, v]) => v !== undefined && v !== null));
   return Object.keys(out).length ? out : undefined;
 };
 
@@ -363,7 +368,12 @@ function buildPayload(parsed, cfg, { format, role, commit, runId, ranAt, root, w
       return;
     }
     const execution = t.execution ?? c.execution;
-    const usage = t.usage ?? t.usageFor?.(model.id);
+    let usage = t.usage ?? t.usageFor?.(model.id);
+    // promptfoo's usage is its provider's: not the model ai.yml names when they differ.
+    if (usage && format === 'promptfoo' && t.model && t.model.id !== model.id) {
+      warn(`${c.name}: promptfoo's provider isn't the model ${where}.model names, so its usage was left out: make them match to send it.`);
+      usage = undefined;
+    }
     const dataset = c.dataset ? { ...c.datasetDef } : undefined;
     const datasetSha = dataset && hashFile(root, dataset.path, `${c.prefix}datasets.${c.dataset}.path`, hashes);
     let judge = c.evaluator.judge_model;
