@@ -38,7 +38,7 @@ in this repository. Read its README first; follow it, don't guess.
    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
      with persist-credentials: false.
    - Every Complyd step pinned exactly as:
-     uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0
+     uses: complyd/complyd-pipeline-action@1f44978cc1f6daa05d4520fde6a3bf7519cc1439 # v1.4.0
      with trust: ${{ vars.COMPLYD_TRUST }} and audience: ${{ vars.COMPLYD_AUDIENCE }}
      (an empty audience falls back to the default, which is right for a new trust).
 2. Pick the scans from what this repository has (one step of each kind per run at most):
@@ -57,11 +57,10 @@ in this repository. Read its README first; follow it, don't guess.
    - AI evals, only if the repo already runs promptfoo, DeepEval, OpenAI Evals or
      lm-evaluation-harness: the Complyd step with scan: ai_eval, the matching format
      (promptfoo, deepeval, openai-evals, lm-eval) and input: the tool's results file.
-     It also needs .complyd/ai.yml (see the README's "AI release" section). Don't
-     add execution: to it while the pin above is v1.3.0, which refuses the key
-     (from v1.4.0: set a suite's execution: (live, scripted, replay) only when you
-     know how it calls the model; read the eval config: a mocked or stubbed model
-     is scripted; otherwise leave it out and ask me).
+     It also needs .complyd/ai.yml (see the README's "AI release" section). Set a
+     suite's execution: (live, scripted, replay) only when you know how it calls
+     the model; read the eval config: a mocked or stubbed model is scripted;
+     otherwise leave it out and ask me.
    Only use inputs listed in the action's action.yml.
 3. Never add a secret, token or API key: the action signs in with the job's OIDC token.
 4. Tell me what to do in Complyd, since you can't: open Settings › Workload trusts ›
@@ -121,7 +120,7 @@ jobs:
             ./
       - name: Send the dependency scan to Complyd
         # Pin the release commit (see Releases); @v1 follows every v1.x.y.
-        uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0
+        uses: complyd/complyd-pipeline-action@1f44978cc1f6daa05d4520fde6a3bf7519cc1439 # v1.4.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000 # your trust id
           results: osv-results.json
@@ -237,7 +236,7 @@ send both, one step each. A repository with CodeQL for JavaScript and Python:
         with:
           output: codeql-results # one SARIF file per language: javascript.sarif, python.sarif
       - name: Send the SAST scan to Complyd
-        uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0
+        uses: complyd/complyd-pipeline-action@1f44978cc1f6daa05d4520fde6a3bf7519cc1439 # v1.4.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000
           scan: sast
@@ -282,11 +281,12 @@ The old name was removed in 1.2.0. Use
 `complyd-pipeline scan dependencies|sast …` with the same options.
 
 Install it from this repository, pinned to a release commit
-(`npm install --global github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9`), or
+(`npm install --global github:complyd/complyd-pipeline-action#1f44978cc1f6daa05d4520fde6a3bf7519cc1439`), or
 build the image from the `Dockerfile` (distroless Node, no shell). The npm
 package `@complyd/pipeline` and the image `ghcr.io/complyd/pipeline` are
 published from the release workflow once a release is approved (see
-[RELEASING.md](RELEASING.md)); until then, install from the repository.
+[RELEASING.md](RELEASING.md)); they are not published for 1.4.0, so install
+from the repository as above.
 
 **Sign-in**, the first that applies:
 
@@ -353,7 +353,7 @@ dependency-scan:
     # osv-scanner exits 1 when it finds something: that is still a scan to send.
     # --all-packages: every package read, so Complyd sees the scan ran.
     - osv-scanner scan source -r --all-packages --format json . > osv-results.json || [ $? -eq 1 ]
-    - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
+    - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#1f44978cc1f6daa05d4520fde6a3bf7519cc1439
     - >
       complyd-pipeline scan dependencies --input osv-results.json
       --scanner-version "$OSV_SCANNER_VERSION"
@@ -395,7 +395,7 @@ stage('Send the dependency scan to Complyd') {
 ```
 
 (`complyd-pipeline` is the image built from this repository's `Dockerfile`,
-or `ghcr.io/complyd/pipeline@sha256:<digest>` once published; on an agent
+or `ghcr.io/complyd/pipeline@sha256:<digest>` once published (not for 1.4.0); on an agent
 with Node 20+, install the command as above instead.)
 
 A published image's tag can be moved, so use it by the digest from the
@@ -425,7 +425,7 @@ phases:
     runtime-versions:
       nodejs: 20
     commands:
-      - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
+      - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#1f44978cc1f6daa05d4520fde6a3bf7519cc1439
   build:
     commands:
       - semgrep scan --config auto --sarif --output semgrep.sarif
@@ -462,7 +462,7 @@ jobs:
       - run:
           name: Send the dependency scan to Complyd
           command: |
-            npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
+            npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#1f44978cc1f6daa05d4520fde6a3bf7519cc1439
             COMPLYD_ID_TOKEN=$(circleci run oidc get --v3 --aud "https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000") \
               complyd-pipeline scan dependencies --input osv-results.json --scanner-version 2.7.1 \
                 --trust trw_00000000-0000-4000-8000-000000000000 \
@@ -504,7 +504,7 @@ pipelines:
               - https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
           script:
             # … run OSV-Scanner (--all-packages --format json), writing osv-results.json
-            - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
+            - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#1f44978cc1f6daa05d4520fde6a3bf7519cc1439
             - >
               complyd-pipeline scan dependencies --input osv-results.json --scanner-version 2.7.1
               --trust trw_00000000-0000-4000-8000-000000000000
@@ -532,7 +532,7 @@ pool:
 steps:
   # … run OSV-Scanner (--all-packages --format json), writing osv-results.json
   - script: |
-      npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
+      npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#1f44978cc1f6daa05d4520fde6a3bf7519cc1439
       complyd-pipeline scan dependencies --input osv-results.json --scanner-version 2.7.1 \
         --repo azure-devops:acme/payments-api \
         --run-id "$(Build.BuildId)-$(System.JobAttempt)"
@@ -639,8 +639,7 @@ strict YAML reader: anchors, tags and `|` / `>` text blocks are refused.
 
 #### How a suite ran: `execution`
 
-(from v1.4.0, not released yet: while the pins in this README say v1.3.0,
-leave `execution:` out. 1.3.0 refuses a `.complyd/ai.yml` that uses it as an
+(from v1.4.0: 1.3.0 and earlier refuse a `.complyd/ai.yml` that uses it as an
 unknown key.)
 
 `execution:` says how a suite's run used the model under test:
@@ -779,7 +778,7 @@ trusts), then:
 ```yaml
       - run: npx promptfoo@0.112.3 eval -c promptfooconfig.yaml -o promptfoo-results.json || true
       - name: Send the eval run to Complyd
-        uses: complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0
+        uses: complyd/complyd-pipeline-action@1f44978cc1f6daa05d4520fde6a3bf7519cc1439 # v1.4.0
         with:
           trust: trw_00000000-0000-4000-8000-000000000000
           audience: https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
@@ -803,7 +802,7 @@ ai-eval:
       aud: https://api.complyd.ai/observations/trw_00000000-0000-4000-8000-000000000000
   script:
     - npx promptfoo@0.112.3 eval -c promptfooconfig.yaml -o promptfoo-results.json || true
-    - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#a813c97d7b782498ef6daf680990822e0e8defb9
+    - npm install --global --ignore-scripts github:complyd/complyd-pipeline-action#1f44978cc1f6daa05d4520fde6a3bf7519cc1439
     - >
       complyd-pipeline scan ai_eval --format promptfoo --input promptfoo-results.json
       --trust trw_00000000-0000-4000-8000-000000000000
@@ -1107,7 +1106,7 @@ release on:
    `X.Y.Z` (CI fails the tag otherwise: that version is what Complyd records as
    the collector version). Then `v1` is moved to the same commit.
 5. Release notes give the commit SHA and the image digest, so you can pin
-   the commit, e.g. `complyd/complyd-pipeline-action@a813c97d7b782498ef6daf680990822e0e8defb9 # v1.3.0`
+   the commit, e.g. `complyd/complyd-pipeline-action@1f44978cc1f6daa05d4520fde6a3bf7519cc1439 # v1.4.0`
    (recommended; Dependabot keeps it up to date) or follow `@v1`.
 
 Security reports: see [SECURITY.md](SECURITY.md).
