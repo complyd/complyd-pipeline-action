@@ -98,12 +98,12 @@ can publish.
 ## 4. After publishing
 
 In a follow-up PR, replace the previous release SHA with the new one
-everywhere (`grep -rn <old sha> README.md llms.txt`), so no pin goes stale.
+everywhere (`grep -rn <old sha> README.md AGENTS.md llms.txt`), so no pin goes stale.
 Update README's "Other CI systems" install lines to
 `npm install --global @complyd/pipeline@X.Y.Z` and the image.
 
 When this bumps the pin to 1.4.0, also remove the "from v1.4.0" notes
-(`grep -n 'v1.4.0' README.md llms.txt SECURITY.md`), including the "not
+(`grep -n 'v1.4.0' README.md AGENTS.md llms.txt SECURITY.md`), including the "not
 released yet" paragraph under "How a suite ran" and the AI-setup prompt's
 "Don't add execution: … while the pin above is v1.3.0" (keep its advice on
 when to set `execution:`).

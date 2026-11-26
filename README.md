@@ -23,61 +23,30 @@ outputs: see [AI release](#ai-release).
 ## Set up with your AI assistant
 
 Paste this into Claude Code, Cursor, Copilot or another coding assistant
-opened in the repository you want scanned. Everything in it comes from this
-README; [llms.txt](llms.txt) points an assistant at the rest.
+opened in the repository you want scanned:
 
 ```text
-Set up the Complyd pipeline GitHub Action (https://github.com/complyd/complyd-pipeline-action)
-in this repository. Read its README first; follow it, don't guess.
-
-1. Create .github/workflows/complyd-scan.yml with:
-   - on: push to the default branch, a daily schedule (cron), and workflow_dispatch.
-     Complyd accepts runs on the default branch only.
-   - permissions: id-token: write and contents: read. Nothing else, except
-     security-events: write if (and only if) you add the CodeQL SAST option below.
-   - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-     with persist-credentials: false.
-   - Every Complyd step pinned exactly as:
-     uses: complyd/complyd-pipeline-action@1f44978cc1f6daa05d4520fde6a3bf7519cc1439 # v1.4.0
-     with trust: ${{ vars.COMPLYD_TRUST }} and audience: ${{ vars.COMPLYD_AUDIENCE }}
-     (an empty audience falls back to the default, which is right for a new trust).
-2. Pick the scans from what this repository has (one step of each kind per run at most):
-   - Dependencies (any repo with a lockfile): google/osv-scanner-action/osv-scanner-action
-     pinned to 32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1, continue-on-error: true,
-     scan-args --format=json --output=osv-results.json --all-packages --recursive ./
-     Then the Complyd step with results: osv-results.json and scanner-version: 2.7.1.
-   - SAST (source code), one scanner only. If the repo already runs CodeQL, send its
-     SARIF directory instead (README "SAST scans"). Otherwise install Semgrep pinned
-     (pipx install semgrep==1.185.0, the version the test fixtures come from) and run
-     semgrep scan --config p/default --metrics=off --sarif-output semgrep.sarif --json-output semgrep.json
-     (not --config auto: it needs metrics on, which send the project URL to semgrep.dev).
-     Then the Complyd step with scan: sast, results: semgrep.sarif and files-scanned
-     from a step with an id: echo "n=$(jq '.paths.scanned | length' semgrep.json)" >> "$GITHUB_OUTPUT",
-     used as files-scanned: ${{ steps.<id>.outputs.n }}.
-   - AI evals, only if the repo already runs promptfoo, DeepEval, OpenAI Evals or
-     lm-evaluation-harness: the Complyd step with scan: ai_eval, the matching format
-     (promptfoo, deepeval, openai-evals, lm-eval) and input: the tool's results file.
-     It also needs .complyd/ai.yml (see the README's "AI release" section). Set a
-     suite's execution: (live, scripted, replay) only when you know how it calls
-     the model; read the eval config: a mocked or stubbed model is scripted;
-     otherwise leave it out and ask me.
-   Only use inputs listed in the action's action.yml.
-3. Never add a secret, token or API key: the action signs in with the job's OIDC token.
-4. Tell me what to do in Complyd, since you can't: open Settings › Workload trusts ›
-   Create trust, tick "Complyd CI scan" (and "Complyd AI release" for AI evals), keep
-   the workflow events push, schedule and workflow_dispatch ticked (the defaults), enter
-   the owner id and repository id from
-   gh api repos/OWNER/REPO --jq '.owner.id, .id'
-   and the default branch, then copy the trust id (trw_…) and audience it shows into
-   repository variables (variables, not secrets):
-   gh variable set COMPLYD_TRUST --body trw_…
-   gh variable set COMPLYD_AUDIENCE --body https://api.complyd.ai/observations/trw_…
-5. Show me the workflow file and the commands before running anything.
+Set up the Complyd pipeline in this repository. Read
+https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/AGENTS.md
+and follow "Set up the pipeline in a repository" step by step; don't guess any value.
+Use the Complyd MCP tools check_pipeline_setup and create_workload_trust if you have them.
+Never add a secret, token or API key.
+Show me the workflow file and every command before you run or push anything.
 ```
+
+[AGENTS.md](AGENTS.md#set-up-the-pipeline-in-a-repository) walks the
+assistant through it: the repository's ids, a workload trust it proposes
+with `create_workload_trust` and **you confirm in Complyd** (the assistant
+can't), the workflow with the current release pinned, and a check with
+`check_pipeline_setup` that Complyd received the first scan. It works best
+with Complyd's MCP server (`https://api.complyd.ai/mcp`) connected, as an
+Owner or Admin; without it, the assistant tells you what to click in
+Complyd (the steps in [Set up](#set-up)). [llms.txt](llms.txt) points an
+assistant at the rest of these docs.
 
 What the assistant should end up with is the workflow in [Set up](#set-up),
 plus [SAST scans](#sast-scans) or [AI release](#ai-release) steps if they
-apply. Check its pins against the ones above before you merge.
+apply. Check its pins against the ones in AGENTS.md before you merge.
 
 ## Set up
 
