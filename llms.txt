@@ -4,10 +4,13 @@
 
 Pin it as `uses: complyd/complyd-pipeline-action@1f44978cc1f6daa05d4520fde6a3bf7519cc1439 # v1.4.0` with `permissions: id-token: write`. The trust id comes from Complyd's Settings › Workload trusts.
 
+Setting it up in a repository: follow [AGENTS.md](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/AGENTS.md), "Set up the pipeline in a repository". With Complyd's MCP server (`https://api.complyd.ai/mcp`) connected: `check_pipeline_setup` shows the repository's trusts and the last scan Complyd received; `create_workload_trust` only proposes a trust, which an Owner or Admin confirms in Complyd. Store the trust id as a repository variable, never a secret.
+
 ## Docs
 
 - [README.md](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/README.md): the whole README as raw markdown
-- [Set up with your AI assistant](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#set-up-with-your-ai-assistant): copy-paste prompt for coding assistants
+- [AGENTS.md](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/AGENTS.md): step-by-step setup for a coding assistant: ids, trust over MCP, the pinned workflow, verifying the first scan
+- [Set up with your AI assistant](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#set-up-with-your-ai-assistant): the copy-paste prompt
 - [Set up](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#set-up): dependency scan workflow with OSV-Scanner
 - [SAST scans](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#sast-scans): CodeQL and Semgrep
 - [AI release](https://github.com/complyd/complyd-pipeline-action/blob/main/README.md#ai-release): `scan: ai_eval` and `.complyd/ai.yml`
@@ -29,5 +32,4 @@ Pin it as `uses: complyd/complyd-pipeline-action@1f44978cc1f6daa05d4520fde6a3bf7
 
 ## Optional
 
-- [AGENTS.md](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/AGENTS.md): for agents contributing to this repository
 - [RELEASING.md](https://raw.githubusercontent.com/complyd/complyd-pipeline-action/main/RELEASING.md): release process
