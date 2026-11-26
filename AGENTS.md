@@ -31,7 +31,8 @@ command below, from Complyd's MCP tools, or from the person you work with.
   `/mcp` › Authenticate; Cursor: `{ "mcpServers": { "complyd": { "url": "https://api.complyd.ai/mcp" } } }`
   in `.cursor/mcp.json`, then **Needs login**). If either tool is missing
   from your tool list, an Owner ticks it in Complyd under **AI apps ›
-  Workspace**. Without MCP, do step 3 by hand: README, "Set up".
+  Workspace**. Complyd asks the person to turn on two-factor sign-in before
+  an AI app can connect. Without MCP, do step 3 by hand: README, "Set up".
 
 ### 2. Collect the repository's facts
 
@@ -64,14 +65,17 @@ Complyd matches the numeric ids, never the names.
    (`push`, `schedule`, `workflow_dispatch`) match the workflow below.
 4. **This creates nothing.** It returns a `confirmUrl`. Give that link to the
    person and ask them to open it and confirm in Complyd. You can't confirm
-   it yourself, and you must not try.
+   it yourself, and you must not try. In a brand-new workspace Complyd first
+   asks them to finish its short workspace setup; after that, they open the
+   link again (or **AI apps › Waiting for you**).
 5. When they say it's done, call `check_pipeline_setup` again: the trust is
    listed with its `trustId`.
 
 If `audience` is `default` (a new trust), the workflow leaves `audience:`
-empty. If it is `rotated`, ask the person to copy the audience shown in
+empty. If it is `rotated`, or the workspace is not on `api.complyd.ai`
+(a test environment), ask the person to copy the audience shown in
 Complyd's **Settings › Workload trusts** into a `COMPLYD_AUDIENCE`
-variable.
+variable, the same way as below.
 
 ### 4. Store the trust id as a repository variable
 
@@ -79,6 +83,8 @@ A variable, not a secret (the trust id is not a credential):
 
 ```sh
 gh variable set COMPLYD_TRUST --body trw_…
+# gh older than 2.31 has no `variable` command:
+gh api -X POST repos/OWNER/REPO/actions/variables -f name=COMPLYD_TRUST -f value=trw_…
 ```
 
 ### 5. Add the workflow
@@ -112,7 +118,7 @@ jobs:
         with:
           scan-args: |-
             --format=json
-            --output=osv-results.json
+            --output-file=osv-results.json
             --all-packages
             --recursive
             ./
@@ -150,6 +156,7 @@ Common failures (README, "Errors"):
 | Log says | Fix |
 |---|---|
 | GitHub gave this job no sign-in token | add `permissions: id-token: write` |
+| Couldn't reach Complyd (api.complyd.ai) | the trust is on another Complyd host: set `COMPLYD_AUDIENCE` from Settings (step 3) |
 | `unauthenticated` | wrong `trust`, a rotated trust's `audience`, or the trust was revoked; or the owner/repository id in the trust is wrong |
 | `not_allowed` | the run isn't on the default branch, or its event isn't one the trust allows |
 | `idempotency_conflict` | two dependency scans in one run; keep one |
